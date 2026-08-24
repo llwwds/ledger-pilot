@@ -10,11 +10,38 @@
   --line: #bdc8cc;
   --blue: #293b47;
   --red: #c8564f;
+  --success: #486d59;
+  --panel: rgba(245,247,247,.58);
+  --strong-panel: #f5f7f7;
+  --input: #f5f7f7;
+  --overlay: rgba(20,31,37,.58);
+  --shadow: 8px 8px 0 rgba(41,59,71,.08);
+  --blur: 0px;
+}
+
+:root[data-theme="glass"] {
+  color: #edf3ff;
+  background: #10182c;
+  --ink: #edf3ff;
+  --ink-soft: #b6c4db;
+  --paper: #17233d;
+  --fog: #10182c;
+  --line: rgba(178, 202, 237, .25);
+  --blue: rgba(28, 43, 74, .88);
+  --red: #f0c97a;
+  --success: #8ed7bd;
+  --panel: rgba(31, 48, 82, .64);
+  --strong-panel: rgba(39, 58, 96, .88);
+  --input: rgba(13, 23, 44, .76);
+  --overlay: rgba(4, 9, 23, .76);
+  --shadow: 0 20px 70px rgba(2, 7, 22, .34);
+  --blur: 22px;
 }
 
 * { box-sizing: border-box; }
 html { scroll-behavior: smooth; }
-body { margin: 0; min-width: 320px; min-height: 100vh; background: var(--fog); }
+body { margin: 0; min-width: 320px; min-height: 100vh; background: var(--fog); transition: color .3s ease, background .3s ease; }
+:root[data-theme="glass"] body { background: radial-gradient(circle at 12% -8%, rgba(69, 102, 174, .55), transparent 36%), radial-gradient(circle at 88% 8%, rgba(104, 69, 153, .32), transparent 31%), linear-gradient(145deg, #111a30 0%, #0d1528 52%, #121a31 100%); background-attachment: fixed; }
 button, input, select, textarea { font: inherit; }
 button { color: inherit; }
 button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, a:focus-visible { outline: 3px solid rgba(200, 86, 79, .38); outline-offset: 3px; }
@@ -33,6 +60,9 @@ main { width: min(1500px, 100%); min-height: 100vh; margin: 0 auto; padding: 0 c
 .main-nav button { position: relative; padding: 0 18px; border: 0; background: none; color: var(--ink-soft); cursor: pointer; font-size: 11px; }
 .main-nav button.active { color: var(--ink); font-weight: 650; }
 .main-nav button.active::after { content: ""; position: absolute; right: 18px; bottom: -1px; left: 18px; height: 3px; background: var(--red); }
+.theme-switch { display: flex; align-items: center; gap: 4px; padding: 4px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); box-shadow: var(--shadow); }
+.theme-switch button { min-height: 30px; padding: 0 10px; border: 0; border-radius: 999px; background: transparent; color: var(--ink-soft); cursor: pointer; font-size: 10px; white-space: nowrap; }
+.theme-switch button[aria-pressed="true"] { color: var(--ink); background: var(--strong-panel); box-shadow: 0 2px 9px rgba(15,24,38,.12); }
 
 .month-rail { position: relative; display: grid; grid-template-columns: 42px 1fr 42px; align-items: center; height: 112px; margin: 0 calc(clamp(20px, 4.5vw, 72px) * -1); padding: 0 clamp(20px, 4.5vw, 72px); border-bottom: 1px solid rgba(41, 59, 71, .22); background-image: repeating-linear-gradient(90deg, transparent 0, transparent 23px, rgba(41,59,71,.12) 24px, transparent 25px); }
 .month-track { height: 100%; display: grid; grid-template-columns: repeat(5, 1fr); align-items: stretch; overflow: hidden; }
@@ -213,7 +243,7 @@ footer span { font-family: "SFMono-Regular", Consolas, monospace; letter-spacing
 .rule-state { color: #385f4b; font: 9px "SFMono-Regular", Consolas, monospace; }
 .rule-state.off { color: var(--ink-soft); }
 
-.modal-backdrop { position: fixed; z-index: 20; inset: 0; display: grid; place-items: center; padding: 20px; background: rgba(20,31,37,.58); backdrop-filter: blur(5px); }
+.modal-backdrop { position: fixed; z-index: 20; inset: 0; display: grid; place-items: center; padding: 20px; background: var(--overlay); backdrop-filter: blur(5px); }
 .annotation-dialog { width: min(880px, 100%); max-height: calc(100vh - 40px); overflow: auto; border: 1px solid var(--ink); background: var(--paper); box-shadow: 18px 18px 0 rgba(20,31,37,.22); }
 .manual-dialog { width: min(760px, 100%); max-height: calc(100vh - 40px); overflow: auto; border: 1px solid var(--ink); background: var(--paper); box-shadow: 18px 18px 0 rgba(20,31,37,.22); }
 .manual-dialog > header { display: flex; justify-content: space-between; padding: 24px 28px; background: var(--blue); color: var(--paper); }
@@ -251,6 +281,81 @@ footer span { font-family: "SFMono-Regular", Consolas, monospace; letter-spacing
 .suggestion-note { margin: 0 28px 20px; padding: 12px 14px; border-left: 3px solid #d29a66; background: #f2e9df; color: var(--ink-soft); font-size: 11px; line-height: 1.6; }
 .dialog-actions { min-height: 74px; justify-content: flex-end; gap: 8px; padding: 14px 28px; border-top: 1px solid var(--line); }
 
+:root[data-theme="glass"] .masthead,
+:root[data-theme="glass"] .month-rail { border-color: var(--line); }
+:root[data-theme="glass"] .month-rail { background-color: rgba(13, 23, 43, .2); background-image: repeating-linear-gradient(90deg, transparent 0, transparent 23px, rgba(190,211,242,.1) 24px, transparent 25px); }
+:root[data-theme="glass"] .brand-mark,
+:root[data-theme="glass"] .rail-arrow,
+:root[data-theme="glass"] .theme-switch,
+:root[data-theme="glass"] .summary-strip,
+:root[data-theme="glass"] .panel,
+:root[data-theme="glass"] .heatmap-section,
+:root[data-theme="glass"] .heatmap-card,
+:root[data-theme="glass"] .ledger-section,
+:root[data-theme="glass"] .label-workbench,
+:root[data-theme="glass"] .rule-form,
+:root[data-theme="glass"] .rule-list,
+:root[data-theme="glass"] .annotation-dialog,
+:root[data-theme="glass"] .manual-dialog,
+:root[data-theme="glass"] .password-dialog {
+  background: var(--panel);
+  border-color: var(--line);
+  box-shadow: var(--shadow);
+  -webkit-backdrop-filter: blur(var(--blur)) saturate(135%);
+  backdrop-filter: blur(var(--blur)) saturate(135%);
+}
+:root[data-theme="glass"] .summary-strip .hero-amount,
+:root[data-theme="glass"] .manual-dialog > header,
+:root[data-theme="glass"] .password-dialog > header,
+:root[data-theme="glass"] .annotation-dialog > header { color: var(--ink); background: linear-gradient(135deg, rgba(53, 77, 123, .96), rgba(35, 47, 82, .92)); }
+:root[data-theme="glass"] .summary-strip .hero-amount p,
+:root[data-theme="glass"] .summary-strip .hero-amount span,
+:root[data-theme="glass"] .manual-dialog header p:last-child,
+:root[data-theme="glass"] .annotation-dialog header p:last-child { color: var(--ink-soft); }
+:root[data-theme="glass"] .month-tick.active { color: #172038; }
+:root[data-theme="glass"] .month-tick.active::before { box-shadow: 0 0 30px rgba(240,201,122,.22); }
+:root[data-theme="glass"] .button.primary { color: #152039; background: var(--red); box-shadow: 0 8px 28px rgba(2,7,22,.28); }
+:root[data-theme="glass"] .button.secondary,
+:root[data-theme="glass"] .rail-arrow,
+:root[data-theme="glass"] .dimension-pane > button.active,
+:root[data-theme="glass"] .empty-ledger,
+:root[data-theme="glass"] .skeleton div,
+:root[data-theme="glass"] .rule-labels { background: rgba(45, 65, 104, .42); }
+:root[data-theme="glass"] .filters input,
+:root[data-theme="glass"] .filters select,
+:root[data-theme="glass"] .dimension-pane input,
+:root[data-theme="glass"] .dimension-pane select,
+:root[data-theme="glass"] .editor-pane input,
+:root[data-theme="glass"] .editor-pane select,
+:root[data-theme="glass"] .editor-pane textarea,
+:root[data-theme="glass"] .rule-form input,
+:root[data-theme="glass"] .rule-form select,
+:root[data-theme="glass"] .rule-form textarea,
+:root[data-theme="glass"] .manual-fields input,
+:root[data-theme="glass"] .manual-fields select,
+:root[data-theme="glass"] .manual-fields textarea,
+:root[data-theme="glass"] .password-body textarea,
+:root[data-theme="glass"] .annotation-fields select { color: var(--ink); background: var(--input); border-color: var(--line); color-scheme: dark; }
+:root[data-theme="glass"] td { border-color: rgba(178, 202, 237, .16); }
+:root[data-theme="glass"] .tree-row.active { color: var(--ink); background: rgba(76, 105, 158, .7); }
+:root[data-theme="glass"] .suggestion-note { color: var(--ink-soft); background: rgba(112, 83, 48, .34); border-color: var(--red); }
+:root[data-theme="glass"] .status.success { border-color: rgba(142,215,189,.48); background: rgba(48,91,79,.48); }
+:root[data-theme="glass"] .status.error { border-color: rgba(239,142,136,.48); background: rgba(104,50,54,.48); }
+:root[data-theme="glass"] .heatmap-cells i,
+:root[data-theme="glass"] .heatmap-card > footer i { border-color: rgba(190,211,242,.11); background: rgba(190,211,242,.075); }
+:root[data-theme="glass"] .heatmap-card.expense .level-1 { background: #5a4d48; }
+:root[data-theme="glass"] .heatmap-card.expense .level-2 { background: #9e7659; }
+:root[data-theme="glass"] .heatmap-card.expense .level-3 { background: #d9a862; }
+:root[data-theme="glass"] .heatmap-card.expense .level-4 { background: #f2d58d; }
+:root[data-theme="glass"] .heatmap-card.income .level-1 { background: #31554f; }
+:root[data-theme="glass"] .heatmap-card.income .level-2 { background: #4f8877; }
+:root[data-theme="glass"] .heatmap-card.income .level-3 { background: #72b69e; }
+:root[data-theme="glass"] .heatmap-card.income .level-4 { background: #a6e2ca; }
+:root[data-theme="glass"] .amount.income,
+:root[data-theme="glass"] .rule-state,
+:root[data-theme="glass"] .tag i.manual { color: var(--success); }
+:root[data-theme="glass"] .close-button { color: var(--ink); }
+
 @keyframes pulse { to { background: rgba(245,247,247,.75); } }
 
 @media (max-width: 920px) {
@@ -268,6 +373,7 @@ footer span { font-family: "SFMono-Regular", Consolas, monospace; letter-spacing
   main { padding-inline: 16px; }
   .masthead { height: 70px; }
   .header-note { display: none; }
+  .theme-switch { margin-left: auto; }
   .masthead { flex-wrap: wrap; height: auto; padding: 12px 0 0; }
   .main-nav { order: 3; width: 100%; height: 48px; margin-top: 8px; }
   .main-nav button { flex: 1; padding: 0 8px; }

@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 
 beforeEach(() => {
+  window.localStorage.clear()
+  delete document.documentElement.dataset.theme
   vi.stubGlobal('fetch', vi.fn().mockImplementation((input: string) => Promise.resolve({
     ok: true,
     json: async () => input.includes('label-catalog') || input.endsWith('/api/rules') ? [] : input.includes('/api/heatmaps') ? ({ year: 2026, expense: [{ date: '2026-01-01', value: 180.32, count: 8 }], income: [{ date: '2026-01-01', value: 2079.96, count: 21 }] }) : ({
@@ -16,7 +18,7 @@ beforeEach(() => {
     }),
   })))
 })
-afterEach(() => cleanup())
+afterEach(() => { cleanup(); window.localStorage.clear(); delete document.documentElement.dataset.theme })
 
 describe('App', () => {
   it('展示核心审阅入口和月度数据', async () => {
@@ -42,6 +44,25 @@ describe('App', () => {
     expect(await screen.findByRole('dialog', { name: '手动记一笔' })).toBeInTheDocument()
     expect(screen.getByLabelText('流水号（可选，用于防重复）')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '记录流水' })).toBeInTheDocument()
+  })
+
+  it('切换皮肤并把选择保存在本机', async () => {
+    render(<App />)
+    const ledger = screen.getByRole('button', { name: '雾蓝账页' })
+    const glass = screen.getByRole('button', { name: '流光雾镜' })
+    expect(ledger).toHaveAttribute('aria-pressed', 'true')
+    expect(document.documentElement).toHaveAttribute('data-theme', 'ledger')
+    fireEvent.click(glass)
+    expect(glass).toHaveAttribute('aria-pressed', 'true')
+    expect(document.documentElement).toHaveAttribute('data-theme', 'glass')
+    expect(window.localStorage.getItem('ledger-pilot-theme')).toBe('glass')
+  })
+
+  it('启动时恢复上次选择的流光雾镜', () => {
+    window.localStorage.setItem('ledger-pilot-theme', 'glass')
+    render(<App />)
+    expect(screen.getByRole('button', { name: '流光雾镜' })).toHaveAttribute('aria-pressed', 'true')
+    expect(document.documentElement).toHaveAttribute('data-theme', 'glass')
   })
 
   it('选择压缩包时要求输入只用于本次解密的密码', async () => {

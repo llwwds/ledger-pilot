@@ -9,8 +9,13 @@ import type { AnnotationData, DashboardData, DistributionItem, HeatmapData, Heat
 
 const money = new Intl.NumberFormat('zh-CN', { style: 'currency', currency: 'CNY' })
 const compactMoney = new Intl.NumberFormat('zh-CN', { notation: 'compact', maximumFractionDigits: 1 })
-const PIE_COLORS = ['#213640', '#5e7c88', '#94a9ad', '#d29a66', '#c75d50', '#7f6f8d']
 type View = 'dashboard' | 'labels' | 'rules'
+type Theme = 'ledger' | 'glass'
+const THEME_STORAGE_KEY = 'ledger-pilot-theme'
+const THEME_CHARTS: Record<Theme, { pie: string[]; grid: string; expense: string; expenseFill: string; income: string }> = {
+  ledger: { pie: ['#213640', '#5e7c88', '#94a9ad', '#d29a66', '#c75d50', '#7f6f8d'], grid: '#d5dde0', expense: '#c75d50', expenseFill: '#c75d5022', income: '#526d7b' },
+  glass: { pie: ['#f0c97a', '#82aee8', '#8ed7bd', '#c19ae8', '#ef8e88', '#8d9ebd'], grid: 'rgba(183, 205, 238, .18)', expense: '#f2c879', expenseFill: 'rgba(242, 200, 121, .18)', income: '#8ed7bd' },
+}
 
 function currentMonth() { const now = new Date(); return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}` }
 function shiftMonth(value: string, offset: number) { const [year, month] = value.split('-').map(Number); const date = new Date(year, month - 1 + offset, 1); return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}` }
@@ -19,6 +24,7 @@ function localDateTime() { const date = new Date(); date.setMinutes(date.getMinu
 
 function App() {
   const [view, setView] = useState<View>('dashboard')
+  const [theme, setTheme] = useState<Theme>(() => window.localStorage.getItem(THEME_STORAGE_KEY) === 'glass' ? 'glass' : 'ledger')
   const [month, setMonth] = useState(currentMonth)
   const [data, setData] = useState<DashboardData | null>(null)
   const [heatmaps, setHeatmaps] = useState<HeatmapData | null>(null)
@@ -40,6 +46,11 @@ function App() {
   const [query, setQuery] = useState('')
   const fileRef = useRef<HTMLInputElement>(null)
   const heatmapRequestId = useRef(0)
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme
+    window.localStorage.setItem(THEME_STORAGE_KEY, theme)
+  }, [theme])
 
   const report = useCallback((reason: unknown) => setError(reason instanceof Error ? reason.message : '操作未完成'), [])
   const loadCatalog = useCallback(async () => setCatalog(await getLabelCatalog()), [])
@@ -103,6 +114,10 @@ function App() {
         <button className={view === 'labels' ? 'active' : ''} onClick={() => setView('labels')}>标签管理</button>
         <button className={view === 'rules' ? 'active' : ''} onClick={() => setView('rules')}>预填规则</button>
       </nav>
+      <div className="theme-switch" role="group" aria-label="选择皮肤">
+        <button type="button" aria-pressed={theme === 'ledger'} onClick={() => setTheme('ledger')}>雾蓝账页</button>
+        <button type="button" aria-pressed={theme === 'glass'} onClick={() => setTheme('glass')}>流光雾镜</button>
+      </div>
       <div className="header-note"><span />数据仅存本机</div>
     </header>
 
@@ -110,7 +125,7 @@ function App() {
 
     <input ref={fileRef} className="sr-only" type="file" multiple accept=".csv,.xlsx,.zip" onChange={(event) => { const files = [...(event.target.files ?? [])]; if (files.some((file) => file.name.toLowerCase().endsWith('.zip'))) setPendingArchives(files); else void handleImport(files) }} />
     {view === 'dashboard' && <Dashboard
-      month={month} setMonth={setMonth} data={data} heatmaps={heatmaps} heatmapLoading={heatmapLoading} heatmapError={heatmapError} loading={loading} transactions={transactions}
+      theme={theme} month={month} setMonth={setMonth} data={data} heatmaps={heatmaps} heatmapLoading={heatmapLoading} heatmapError={heatmapError} loading={loading} transactions={transactions}
       showAll={showAll} setShowAll={setShowAll} category={category} setCategory={setCategory}
       channel={channel} setChannel={setChannel} query={query} setQuery={setQuery}
       busy={busy} onPickFiles={() => fileRef.current?.click()} onManualEntry={() => setManualEntryOpen(true)} onAnnotate={(id) => setAnnotationIndex(transactions.findIndex((item) => item.id === id))}
@@ -131,7 +146,7 @@ function App() {
       onSubmit={(password) => { const files = pendingArchives; setPendingArchives([]); void handleImport(files, password) }}
     />}
     {manualEntryOpen && <ManualEntryDialog catalog={catalog} onClose={() => setManualEntryOpen(false)} onSaved={handleManualSaved} report={report} />}
-    <footer><span>LEDGER PILOT / V1.2.2</span><p>规则给建议，最终选择由你确认；原始流水永不被标注修改。</p></footer>
+    <footer><span>LEDGER PILOT / V1.3.0</span><p>规则给建议，最终选择由你确认；原始流水永不被标注修改。</p></footer>
   </main>
 }
 
@@ -161,12 +176,14 @@ function ArchivePasswordDialog({ fileCount, onClose, onSubmit }: { fileCount: nu
 }
 
 function Dashboard(props: {
+  theme: Theme
   month: string; setMonth: (value: string) => void; data: DashboardData | null; heatmaps: HeatmapData | null; heatmapLoading: boolean; heatmapError: string; loading: boolean; transactions: Transaction[]
   showAll: boolean; setShowAll: (value: boolean) => void; category: string; setCategory: (value: string) => void
   channel: string; setChannel: (value: string) => void; query: string; setQuery: (value: string) => void
   busy: boolean; onPickFiles: () => void; onManualEntry: () => void; onAnnotate: (id: number) => void
 }) {
-  const { month, data, transactions } = props
+  const { month, data, transactions, theme } = props
+  const chartColors = THEME_CHARTS[theme]
   const months = useMemo(() => [-2, -1, 0, 1, 2].map((offset) => shiftMonth(month, offset)), [month])
   const summary = data?.summary ?? { income: 0, expense: 0, net: 0 }
   const distributions = data?.distributions ?? (data ? [
@@ -178,7 +195,7 @@ function Dashboard(props: {
     <section className="page-heading"><div><p className="eyebrow">MONTHLY REVIEW / {month.replace('-', '.')}</p><h1>{monthName(month)}，逐笔把钱说清楚</h1><p>规则先填建议，你在流水里确认；看板始终标明结论来自人工还是规则。</p></div><div className="actions"><button className="button secondary" onClick={props.onManualEntry}>手动记账</button><button className="button primary" onClick={props.onPickFiles} disabled={props.busy}>{props.busy ? '正在合并…' : '导入账单'}</button></div></section>
     {props.loading ? <DashboardSkeleton /> : data ? <>
       <section className="summary-strip"><article className="hero-amount"><p>本月支出</p><strong>{money.format(summary.expense)}</strong><span>共计流出</span></article><article><p>本月收入</p><strong>{money.format(summary.income)}</strong><span>已入账</span></article><article><p>收支净额</p><strong className={summary.net < 0 ? 'negative' : ''}>{summary.net >= 0 ? '+' : ''}{money.format(summary.net)}</strong><span>{summary.net >= 0 ? '本月有结余' : '支出高于收入'}</span></article></section>
-      <section className="analysis-stack"><article className="panel trend-panel"><PanelHeading index="A" title="日收支轨迹" meta={`${data.trend.length} 个记账日`} />{data.trend.length ? <div className="chart-wrap"><ResponsiveContainer width="100%" height="100%"><AreaChart data={data.trend} margin={{ top: 10, right: 4, left: -20, bottom: 0 }}><CartesianGrid stroke="#d5dde0" strokeDasharray="2 5" vertical={false} /><XAxis dataKey="date" tickLine={false} axisLine={false} tick={{ fontSize: 11 }} tickFormatter={(value: string) => value.slice(-2)} /><YAxis tickLine={false} axisLine={false} tick={{ fontSize: 10 }} tickFormatter={(value: number) => compactMoney.format(value)} /><Tooltip formatter={(value) => money.format(Number(value))} /><Area type="monotone" dataKey="expense" name="支出" stroke="#c75d50" fill="#c75d5022" /><Area type="monotone" dataKey="income" name="收入" stroke="#526d7b" fill="transparent" /></AreaChart></ResponsiveContainer></div> : <EmptyState text="这个月还没有收支轨迹" />}</article><div className="distribution-grid">{distributions.map((distribution, index) => <DistributionPanel key={distribution.dimensionId} index={panelIndex(index + 1)} title={distribution.name} items={distribution.items} />)}</div></section>
+      <section className="analysis-stack"><article className="panel trend-panel"><PanelHeading index="A" title="日收支轨迹" meta={`${data.trend.length} 个记账日`} />{data.trend.length ? <div className="chart-wrap"><ResponsiveContainer width="100%" height="100%"><AreaChart data={data.trend} margin={{ top: 10, right: 4, left: -20, bottom: 0 }}><CartesianGrid stroke={chartColors.grid} strokeDasharray="2 5" vertical={false} /><XAxis dataKey="date" tickLine={false} axisLine={false} tick={{ fontSize: 11 }} tickFormatter={(value: string) => value.slice(-2)} /><YAxis tickLine={false} axisLine={false} tick={{ fontSize: 10 }} tickFormatter={(value: number) => compactMoney.format(value)} /><Tooltip formatter={(value) => money.format(Number(value))} /><Area type="monotone" dataKey="expense" name="支出" stroke={chartColors.expense} fill={chartColors.expenseFill} /><Area type="monotone" dataKey="income" name="收入" stroke={chartColors.income} fill="transparent" /></AreaChart></ResponsiveContainer></div> : <EmptyState text="这个月还没有收支轨迹" />}</article><div className="distribution-grid">{distributions.map((distribution, index) => <DistributionPanel key={distribution.dimensionId} index={panelIndex(index + 1)} title={distribution.name} items={distribution.items} colors={chartColors.pie} />)}</div></section>
       <AnnualHeatmaps data={props.heatmaps} year={Number(month.slice(0, 4))} loading={props.heatmapLoading} error={props.heatmapError} />
       <section className="ledger-section"><div className="ledger-heading"><PanelHeading index={panelIndex(distributions.length + 1)} title="流水标注" meta={`${transactions.length} 条`} /><button className="text-button" onClick={() => props.setShowAll(!props.showAll)}>{props.showAll ? '收起筛选' : '查看并筛选全部'} ↗</button></div>{props.showAll && <div className="filters"><label><span>搜索</span><input value={props.query} onChange={(event) => props.setQuery(event.target.value)} placeholder="商户、商品或备注" /></label><label><span>分类</span><select value={props.category} onChange={(event) => props.setCategory(event.target.value)}><option value="">全部分类</option>{data.categories.map((item) => <option key={item.name}>{item.name}</option>)}</select></label><label><span>渠道</span><select value={props.channel} onChange={(event) => props.setChannel(event.target.value)}><option value="">全部渠道</option>{data.channels.map((item) => <option key={item.name}>{item.name}</option>)}</select></label></div>}<TransactionTable items={transactions} onAnnotate={props.onAnnotate} /></section>
     </> : <EmptyState text="账本暂时没有这个月的数据，请先导入账单" />}
@@ -266,7 +283,7 @@ function RulesManager({ catalog, rules, reload, report, announce }: { catalog: L
 }
 
 function PanelHeading({ index, title, meta }: { index: string; title: string; meta: string }) { return <div className="panel-heading"><div><span>{index}</span><h2>{title}</h2></div><small>{meta}</small></div> }
-function DistributionPanel({ index, title, items }: { index: string; title: string; items: DistributionItem[] }) { const total = items.reduce((sum, item) => sum + item.value, 0); return <article className="panel distribution-panel"><PanelHeading index={index} title={title} meta={`${items.length} 项`} />{items.length ? <div className="distribution-body"><div className="donut-wrap"><ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={items} dataKey="value" nameKey="name" innerRadius="66%" outerRadius="92%" stroke="none">{items.map((item, i) => <Cell key={item.name} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}</Pie><Tooltip formatter={(value) => money.format(Number(value))} /></PieChart></ResponsiveContainer><div><strong>{money.format(total)}</strong><span>总计</span></div></div><ol className="rank-list">{items.slice(0, 5).map((item, i) => <li key={item.name}><i style={{ background: PIE_COLORS[i % PIE_COLORS.length] }} /><span>{item.name}</span><b>{total ? Math.round(item.value / total * 100) : 0}%</b><small>{money.format(item.value)}</small></li>)}</ol></div> : <EmptyState text={`暂无${title}数据`} />}</article> }
+function DistributionPanel({ index, title, items, colors }: { index: string; title: string; items: DistributionItem[]; colors: string[] }) { const total = items.reduce((sum, item) => sum + item.value, 0); return <article className="panel distribution-panel"><PanelHeading index={index} title={title} meta={`${items.length} 项`} />{items.length ? <div className="distribution-body"><div className="donut-wrap"><ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={items} dataKey="value" nameKey="name" innerRadius="66%" outerRadius="92%" stroke="none">{items.map((item, i) => <Cell key={item.name} fill={colors[i % colors.length]} />)}</Pie><Tooltip formatter={(value) => money.format(Number(value))} /></PieChart></ResponsiveContainer><div><strong>{money.format(total)}</strong><span>总计</span></div></div><ol className="rank-list">{items.slice(0, 5).map((item, i) => <li key={item.name}><i style={{ background: colors[i % colors.length] }} /><span>{item.name}</span><b>{total ? Math.round(item.value / total * 100) : 0}%</b><small>{money.format(item.value)}</small></li>)}</ol></div> : <EmptyState text={`暂无${title}数据`} />}</article> }
 function EmptyState({ text }: { text: string }) { return <div className="empty-state"><span>⌁</span><p>{text}</p></div> }
 function DashboardSkeleton() { return <div className="skeleton" aria-label="正在读取"><div /><div /><div /><span>正在读取账本…</span></div> }
 
