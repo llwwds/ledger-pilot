@@ -10,6 +10,8 @@ export interface Transaction {
   sourceCategory?: string; paymentMethod?: string; status: string
 }
 export interface DashboardData { summary: Summary; trend: TrendPoint[]; categories: DistributionItem[]; channels: DistributionItem[]; recent: Transaction[] }
+export interface HeatmapPoint { date: string; value: number; count: number }
+export interface HeatmapData { year: number; expense: HeatmapPoint[]; income: HeatmapPoint[] }
 export interface ImportResult { imported: number; merged: number; skipped: number }
 export interface LabelNode { id: number; dimensionId: string; parentId: number | null; name: string; notes?: string; sortOrder: number; enabled: boolean; usageCount: number }
 export interface LabelDimension { id: string; key: string; name: string; notes?: string; selectionMode: 'single' | 'multiple'; sortOrder: number; enabled: boolean; labels: LabelNode[] }

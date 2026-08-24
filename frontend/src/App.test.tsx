@@ -5,7 +5,7 @@ import App from './App'
 beforeEach(() => {
   vi.stubGlobal('fetch', vi.fn().mockImplementation((input: string) => Promise.resolve({
     ok: true,
-    json: async () => input.includes('label-catalog') || input.endsWith('/api/rules') ? [] : ({
+    json: async () => input.includes('label-catalog') || input.endsWith('/api/rules') ? [] : input.includes('/api/heatmaps') ? ({ year: 2026, expense: [], income: [] }) : ({
       summary: { income: 12000, expense: 3600, net: 8400 }, trend: [], categories: [], channels: [], recent: [],
     }),
   })))
@@ -22,6 +22,8 @@ describe('App', () => {
     expect(screen.getByRole('button', { name: '预填规则' })).toBeInTheDocument()
     expect(await screen.findByText('¥12,000.00')).toBeInTheDocument()
     expect(screen.getByText('流水标注')).toBeInTheDocument()
+    expect(screen.getByText('花钱的热力图')).toBeInTheDocument()
+    expect(screen.getByText('赚钱的热力图')).toBeInTheDocument()
   })
 
   it('打开手动记账弹窗并展示防重复流水号', async () => {

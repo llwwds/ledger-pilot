@@ -1,4 +1,4 @@
-import type { AnnotationData, DashboardData, ImportResult, LabelDimension, LabelNode, ManualTransactionInput, MerchantRule, Transaction } from './types'
+import type { AnnotationData, DashboardData, HeatmapData, ImportResult, LabelDimension, LabelNode, ManualTransactionInput, MerchantRule, Transaction } from './types'
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? ''
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -14,6 +14,7 @@ function json(method: string, body?: unknown): RequestInit { return { method, he
 
 export async function importStatements(files: File[], archivePassword?: string): Promise<ImportResult> { const body = new FormData(); files.forEach((file) => body.append('files', file)); if (archivePassword) body.append('archive_password', archivePassword); return request('/api/import', { method: 'POST', body }) }
 export const getDashboard = (month: string) => request<DashboardData>(`/api/dashboard?month=${encodeURIComponent(month)}`)
+export const getHeatmaps = (year: number) => request<HeatmapData>(`/api/heatmaps?year=${year}`)
 export async function getTransactions(params: { month: string; category?: string; channel?: string; query?: string }): Promise<Transaction[]> {
   const query = new URLSearchParams({ month: params.month, page_size: '500' }); if (params.category) query.set('category', params.category); if (params.channel) query.set('channel', params.channel); if (params.query) query.set('query', params.query)
   return (await request<{ items: Transaction[] }>(`/api/transactions?${query}`)).items

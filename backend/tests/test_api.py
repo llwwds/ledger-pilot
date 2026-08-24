@@ -270,3 +270,18 @@ def test_manual_transaction_is_audited_labeled_and_duplicate_safe(client: TestCl
     events = [item["eventType"] for item in client.get("/api/audit-logs").json()]
     assert "manual_transaction_created" in events
     assert "annotation_saved" in events
+
+
+def test_annual_heatmaps_are_additive_and_direction_specific(client: TestClient) -> None:
+    _import_wechat(client)
+    response = client.get("/api/heatmaps", params={"year": 2026})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["year"] == 2026
+    expense = {item["date"]: item for item in payload["expense"]}
+    income = {item["date"]: item for item in payload["income"]}
+    assert expense["2026-07-31"] == {"date": "2026-07-31", "value": 4.0, "count": 1}
+    assert income["2026-07-31"] == {"date": "2026-07-31", "value": 6.0, "count": 1}
+    assert client.get("/api/dashboard", params={"month": "2026-07"}).status_code == 200
+    assert client.get("/api/heatmaps", params={"year": 1899}).status_code == 422

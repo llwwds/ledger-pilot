@@ -2,10 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Area, AreaChart, CartesianGrid, Cell, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import {
   createDimension, createLabel, createManualTransaction, createRule, deleteDimension, deleteLabel, deleteRule,
-  getAnnotation, getDashboard, getLabelCatalog, getRules, getTransactions, importStatements,
+  getAnnotation, getDashboard, getHeatmaps, getLabelCatalog, getRules, getTransactions, importStatements,
   saveAnnotation, updateDimension, updateLabel, updateRule,
 } from './api'
-import type { AnnotationData, DashboardData, DistributionItem, LabelDimension, LabelNode, ManualTransactionInput, MerchantRule, Transaction } from './types'
+import type { AnnotationData, DashboardData, DistributionItem, HeatmapData, HeatmapPoint, LabelDimension, LabelNode, ManualTransactionInput, MerchantRule, Transaction } from './types'
 
 const money = new Intl.NumberFormat('zh-CN', { style: 'currency', currency: 'CNY' })
 const compactMoney = new Intl.NumberFormat('zh-CN', { notation: 'compact', maximumFractionDigits: 1 })
@@ -21,6 +21,7 @@ function App() {
   const [view, setView] = useState<View>('dashboard')
   const [month, setMonth] = useState(currentMonth)
   const [data, setData] = useState<DashboardData | null>(null)
+  const [heatmaps, setHeatmaps] = useState<HeatmapData | null>(null)
   const [catalog, setCatalog] = useState<LabelDimension[]>([])
   const [rules, setRules] = useState<MerchantRule[]>([])
   const [transactions, setTransactions] = useState<Transaction[]>([])
@@ -40,6 +41,8 @@ function App() {
   const report = useCallback((reason: unknown) => setError(reason instanceof Error ? reason.message : '操作未完成'), [])
   const loadCatalog = useCallback(async () => setCatalog(await getLabelCatalog()), [])
   const loadRules = useCallback(async () => setRules(await getRules()), [])
+  const heatmapYear = Number(month.slice(0, 4))
+  const loadHeatmaps = useCallback(async () => setHeatmaps(await getHeatmaps(heatmapYear)), [heatmapYear])
   const loadDashboard = useCallback(async () => {
     setLoading(true); setError('')
     try { const result = await getDashboard(month); setData(result); setTransactions(result.recent ?? []) }
@@ -47,7 +50,7 @@ function App() {
     finally { setLoading(false) }
   }, [month, report])
 
-  useEffect(() => { void Promise.all([loadDashboard(), loadCatalog(), loadRules()]).catch(report) }, [loadDashboard, loadCatalog, loadRules, report])
+  useEffect(() => { void Promise.all([loadDashboard(), loadHeatmaps(), loadCatalog(), loadRules()]).catch(report) }, [loadDashboard, loadHeatmaps, loadCatalog, loadRules, report])
   useEffect(() => {
     if (!showAll || !data) return
     const timer = window.setTimeout(() => { void getTransactions({ month, category, channel, query }).then(setTransactions).catch(report) }, 200)
@@ -57,7 +60,7 @@ function App() {
   async function handleImport(files: File[], archivePassword?: string) {
     if (!files.length) return
     setBusy(true); setError(''); setNotice('')
-    try { const result = await importStatements(files, archivePassword); setNotice(`读取 ${result.imported} 条，新增 ${result.merged} 条，重复 ${result.skipped} 条已留存审计。`); await loadDashboard() }
+    try { const result = await importStatements(files, archivePassword); setNotice(`读取 ${result.imported} 条，新增 ${result.merged} 条，重复 ${result.skipped} 条已留存审计。`); await Promise.all([loadDashboard(), loadHeatmaps()]) }
     catch (reason) { report(reason) }
     finally { setBusy(false); if (fileRef.current) fileRef.current.value = '' }
   }
@@ -71,7 +74,7 @@ function App() {
     setManualEntryOpen(false)
     setNotice('手动流水已记录，并保留原始快照与审计日志。')
     const savedMonth = transaction.date.slice(0, 7)
-    if (savedMonth === month) await loadDashboard(); else setMonth(savedMonth)
+    if (savedMonth === month) await Promise.all([loadDashboard(), loadHeatmaps()]); else setMonth(savedMonth)
   }
 
   return <main>
@@ -89,7 +92,7 @@ function App() {
 
     <input ref={fileRef} className="sr-only" type="file" multiple accept=".csv,.xlsx,.zip" onChange={(event) => { const files = [...(event.target.files ?? [])]; if (files.some((file) => file.name.toLowerCase().endsWith('.zip'))) setPendingArchives(files); else void handleImport(files) }} />
     {view === 'dashboard' && <Dashboard
-      month={month} setMonth={setMonth} data={data} loading={loading} transactions={transactions}
+      month={month} setMonth={setMonth} data={data} heatmaps={heatmaps} loading={loading} transactions={transactions}
       showAll={showAll} setShowAll={setShowAll} category={category} setCategory={setCategory}
       channel={channel} setChannel={setChannel} query={query} setQuery={setQuery}
       busy={busy} onPickFiles={() => fileRef.current?.click()} onManualEntry={() => setManualEntryOpen(true)} onAnnotate={(id) => setAnnotationIndex(transactions.findIndex((item) => item.id === id))}
@@ -110,7 +113,7 @@ function App() {
       onSubmit={(password) => { const files = pendingArchives; setPendingArchives([]); void handleImport(files, password) }}
     />}
     {manualEntryOpen && <ManualEntryDialog catalog={catalog} onClose={() => setManualEntryOpen(false)} onSaved={handleManualSaved} report={report} />}
-    <footer><span>LEDGER PILOT / V1.1.0</span><p>规则给建议，最终选择由你确认；原始流水永不被标注修改。</p></footer>
+    <footer><span>LEDGER PILOT / V1.2.0</span><p>规则给建议，最终选择由你确认；原始流水永不被标注修改。</p></footer>
   </main>
 }
 
@@ -140,7 +143,7 @@ function ArchivePasswordDialog({ fileCount, onClose, onSubmit }: { fileCount: nu
 }
 
 function Dashboard(props: {
-  month: string; setMonth: (value: string) => void; data: DashboardData | null; loading: boolean; transactions: Transaction[]
+  month: string; setMonth: (value: string) => void; data: DashboardData | null; heatmaps: HeatmapData | null; loading: boolean; transactions: Transaction[]
   showAll: boolean; setShowAll: (value: boolean) => void; category: string; setCategory: (value: string) => void
   channel: string; setChannel: (value: string) => void; query: string; setQuery: (value: string) => void
   busy: boolean; onPickFiles: () => void; onManualEntry: () => void; onAnnotate: (id: number) => void
@@ -154,9 +157,29 @@ function Dashboard(props: {
     {props.loading ? <DashboardSkeleton /> : data ? <>
       <section className="summary-strip"><article className="hero-amount"><p>本月支出</p><strong>{money.format(summary.expense)}</strong><span>共计流出</span></article><article><p>本月收入</p><strong>{money.format(summary.income)}</strong><span>已入账</span></article><article><p>收支净额</p><strong className={summary.net < 0 ? 'negative' : ''}>{summary.net >= 0 ? '+' : ''}{money.format(summary.net)}</strong><span>{summary.net >= 0 ? '本月有结余' : '支出高于收入'}</span></article></section>
       <section className="analysis-grid"><article className="panel trend-panel"><PanelHeading index="A" title="日收支轨迹" meta={`${data.trend.length} 个记账日`} />{data.trend.length ? <div className="chart-wrap"><ResponsiveContainer width="100%" height="100%"><AreaChart data={data.trend} margin={{ top: 10, right: 4, left: -20, bottom: 0 }}><CartesianGrid stroke="#d5dde0" strokeDasharray="2 5" vertical={false} /><XAxis dataKey="date" tickLine={false} axisLine={false} tick={{ fontSize: 11 }} tickFormatter={(value: string) => value.slice(-2)} /><YAxis tickLine={false} axisLine={false} tick={{ fontSize: 10 }} tickFormatter={(value: number) => compactMoney.format(value)} /><Tooltip formatter={(value) => money.format(Number(value))} /><Area type="monotone" dataKey="expense" name="支出" stroke="#c75d50" fill="#c75d5022" /><Area type="monotone" dataKey="income" name="收入" stroke="#526d7b" fill="transparent" /></AreaChart></ResponsiveContainer></div> : <EmptyState text="这个月还没有收支轨迹" />}</article><DistributionPanel index="B" title="支出分类" items={data.categories} /><DistributionPanel index="C" title="支付渠道" items={data.channels} /></section>
+      <AnnualHeatmaps data={props.heatmaps} year={Number(month.slice(0, 4))} />
       <section className="ledger-section"><div className="ledger-heading"><PanelHeading index="D" title="流水标注" meta={`${transactions.length} 条`} /><button className="text-button" onClick={() => props.setShowAll(!props.showAll)}>{props.showAll ? '收起筛选' : '查看并筛选全部'} ↗</button></div>{props.showAll && <div className="filters"><label><span>搜索</span><input value={props.query} onChange={(event) => props.setQuery(event.target.value)} placeholder="商户、商品或备注" /></label><label><span>分类</span><select value={props.category} onChange={(event) => props.setCategory(event.target.value)}><option value="">全部分类</option>{data.categories.map((item) => <option key={item.name}>{item.name}</option>)}</select></label><label><span>渠道</span><select value={props.channel} onChange={(event) => props.setChannel(event.target.value)}><option value="">全部渠道</option>{data.channels.map((item) => <option key={item.name}>{item.name}</option>)}</select></label></div>}<TransactionTable items={transactions} onAnnotate={props.onAnnotate} /></section>
     </> : <EmptyState text="账本暂时没有这个月的数据，请先导入账单" />}
   </>
+}
+
+function AnnualHeatmaps({ data, year }: { data: HeatmapData | null; year: number }) {
+  return <section className="heatmap-section"><PanelHeading index="+" title="年度资金热力" meta={`${year} · 每日强度`} /><div className="heatmap-pair"><HeatmapCard title="花钱的热力图" tone="expense" points={data?.expense ?? []} year={year} /><HeatmapCard title="赚钱的热力图" tone="income" points={data?.income ?? []} year={year} /></div></section>
+}
+
+function HeatmapCard({ title, tone, points, year }: { title: string; tone: 'expense' | 'income'; points: HeatmapPoint[]; year: number }) {
+  const values = new Map(points.map((point) => [point.date, point]))
+  const max = Math.max(0, ...points.map((point) => point.value))
+  const total = points.reduce((sum, point) => sum + point.value, 0)
+  const start = new Date(year, 0, 1)
+  const offset = (start.getDay() + 6) % 7
+  const cells: Array<{ date: string; point?: HeatmapPoint } | null> = Array.from({ length: offset }, () => null)
+  for (let date = new Date(year, 0, 1); date.getFullYear() === year; date.setDate(date.getDate() + 1)) {
+    const key = `${year}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+    cells.push({ date: key, point: values.get(key) })
+  }
+  const level = (value: number) => value <= 0 || max <= 0 ? 0 : Math.max(1, Math.ceil(Math.log1p(value) / Math.log1p(max) * 4))
+  return <article className={`heatmap-card ${tone}`}><header><div><p>{title}</p><strong>{money.format(total)}</strong></div><span>{points.length} 个活跃日</span></header><div className="heatmap-scroll"><div className="month-labels">{Array.from({ length: 12 }, (_, index) => <span key={index}>{index + 1}月</span>)}</div><div className="heatmap-layout"><div className="weekday-labels"><span>一</span><span>三</span><span>五</span><span>日</span></div><div className="heatmap-cells">{cells.map((cell, index) => cell ? <i key={cell.date} className={`level-${level(cell.point?.value ?? 0)}`} title={`${cell.date} · ${money.format(cell.point?.value ?? 0)} · ${cell.point?.count ?? 0} 笔`} aria-label={`${cell.date}，${money.format(cell.point?.value ?? 0)}，${cell.point?.count ?? 0} 笔`} /> : <i key={`blank-${index}`} className="blank" />)}</div></div></div><footer><span>少</span>{[0, 1, 2, 3, 4].map((item) => <i key={item} className={`level-${item}`} />)}<span>多</span><small>按金额对数分级</small></footer></article>
 }
 
 function TransactionTable({ items, onAnnotate }: { items: Transaction[]; onAnnotate: (id: number) => void }) {

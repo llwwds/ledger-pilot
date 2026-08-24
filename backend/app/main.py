@@ -206,7 +206,7 @@ def create_app(*, database_url: str | None = None, data_root: str | Path | None 
         yield
         engine.dispose()
 
-    application = FastAPI(title="Ledger Pilot API", version="1.1.0", lifespan=lifespan)
+    application = FastAPI(title="Ledger Pilot API", version="1.2.0", lifespan=lifespan)
     application.state.engine = engine
     application.state.data_root = resolved_data_root
     origins = [item.strip() for item in os.getenv(
@@ -465,6 +465,32 @@ def create_app(*, database_url: str | None = None, data_root: str | Path | None 
     @application.get("/api/dashboard")
     def dashboard(month: str | None = None, session: Session = Depends(session_dependency)) -> dict[str, object]:
         return dashboard_payload(month, session)
+
+    @application.get("/api/heatmaps")
+    def heatmaps(
+        year: int = Query(..., ge=1900, le=2100),
+        session: Session = Depends(session_dependency),
+    ) -> dict[str, object]:
+        start = datetime(year, 1, 1)
+        end = datetime(year + 1, 1, 1)
+        rows = session.execute(
+            select(Transaction.transaction_time, Transaction.direction, Transaction.amount)
+            .where(and_(Transaction.transaction_time >= start, Transaction.transaction_time < end))
+            .order_by(Transaction.transaction_time)
+        ).all()
+        values: dict[str, dict[str, dict[str, float | int]]] = {
+            "收入": defaultdict(lambda: {"value": 0.0, "count": 0}),
+            "支出": defaultdict(lambda: {"value": 0.0, "count": 0}),
+        }
+        for transaction_time, direction, amount in rows:
+            if direction not in values:
+                continue
+            day = transaction_time.date().isoformat()
+            values[direction][day]["value"] = round(float(values[direction][day]["value"]) + _money(amount), 2)
+            values[direction][day]["count"] = int(values[direction][day]["count"]) + 1
+        def points(direction: str) -> list[dict[str, object]]:
+            return [{"date": day, "value": item["value"], "count": item["count"]} for day, item in sorted(values[direction].items())]
+        return {"year": year, "expense": points("支出"), "income": points("收入")}
 
     @application.get("/api/transactions")
     def transactions(month: str | None = None, category: str | None = None, channel: str | None = None,
