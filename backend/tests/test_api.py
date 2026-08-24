@@ -226,3 +226,47 @@ def test_zip_without_supported_statement_is_rejected_before_import(client: TestC
     assert "没有可导入" in response.json()["detail"]
     with Session(client.app.state.engine) as session:
         assert session.scalar(select(func.count(ImportBatch.id))) == 0
+
+
+def test_manual_transaction_is_audited_labeled_and_duplicate_safe(client: TestClient) -> None:
+    catalog = client.get("/api/label-catalog").json()
+    income = next(d for d in catalog if d["key"] == "income_category")
+    channel = next(d for d in catalog if d["key"] == "payment_channel")
+    salary = next(label for label in income["labels"] if label["name"] == "工资")
+    bank = next(label for label in channel["labels"] if label["name"] == "银行卡")
+    payload = {
+        "transaction_time": "2026-08-10T10:04:11",
+        "direction": "收入",
+        "amount": "5252.20",
+        "counterparty": "示例公司",
+        "summary": "工资",
+        "category": "工资",
+        "payment_channel": "银行卡",
+        "reference_id": "manual-payroll-1",
+        "note": "例外补录",
+        "label_ids": [salary["id"], bank["id"]],
+    }
+
+    response = client.post("/api/transactions/manual", json=payload)
+
+    assert response.status_code == 201, response.text
+    item = response.json()
+    assert item["sourcePlatform"] == "手动"
+    assert item["category"] == "工资"
+    assert item["categorySource"] == "manual"
+    assert item["channel"] == "银行卡"
+    assert item["amount"] == 5252.2
+    duplicate = client.post("/api/transactions/manual", json=payload)
+    assert duplicate.status_code == 409
+    dashboard = client.get("/api/dashboard", params={"month": "2026-08"}).json()
+    assert dashboard["summary"] == {"income": 5252.2, "expense": 0.0, "net": 5252.2}
+
+    with Session(client.app.state.engine) as session:
+        batch = session.scalar(select(ImportBatch).where(ImportBatch.source_platform == "手动"))
+        assert batch is not None
+        assert Path(batch.original_path).read_text(encoding="utf-8")
+        assert session.scalar(select(func.count(ImportRecord.id))) == 1
+        assert session.scalar(select(func.count(Transaction.id))) == 1
+    events = [item["eventType"] for item in client.get("/api/audit-logs").json()]
+    assert "manual_transaction_created" in events
+    assert "annotation_saved" in events

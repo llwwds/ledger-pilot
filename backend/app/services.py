@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import shutil
 import uuid
 from pathlib import Path
@@ -8,8 +9,8 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .importers import parse_upload
-from .annotations import audit
+from .importers import NormalizedTransaction, parse_upload
+from .annotations import audit, save_manual_annotation
 from .models import ImportBatch, ImportRecord, Transaction
 
 
@@ -75,3 +76,54 @@ def persist_import(
         shutil.rmtree(batch_dir, ignore_errors=True)
         raise
     return batch, inserted, duplicates
+
+
+def persist_manual_transaction(
+    session: Session,
+    *,
+    normalized: NormalizedTransaction,
+    evidence: dict[str, object],
+    label_ids: list[int],
+    data_root: Path,
+) -> Transaction:
+    existing = session.scalar(select(Transaction.id).where(
+        Transaction.source_platform == normalized.source_platform,
+        Transaction.transaction_id == normalized.transaction_id,
+    ))
+    if existing is not None:
+        raise ValueError("这条手动流水已经记录过了")
+
+    batch_id = str(uuid.uuid4())
+    batch_dir = data_root / "manual" / batch_id
+    batch_dir.mkdir(parents=True, exist_ok=False)
+    evidence_content = json.dumps(evidence, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    original_path = batch_dir / "manual-entry.json"
+    original_path.write_bytes(evidence_content)
+    batch = ImportBatch(
+        id=batch_id,
+        source_platform=normalized.source_platform,
+        original_filename="manual-entry.json",
+        original_path=str(original_path),
+        sha256=hashlib.sha256(evidence_content).hexdigest(),
+        row_count=1,
+        inserted_count=1,
+    )
+    transaction = Transaction(first_import_batch_id=batch_id, **normalized.as_dict())
+    try:
+        session.add(batch)
+        session.flush()
+        session.add(ImportRecord(batch_id=batch_id, was_duplicate=False, **normalized.as_dict()))
+        session.add(transaction)
+        session.flush()
+        audit(session, "manual_transaction_created", "transaction", transaction.id, {
+            "batchId": batch_id,
+            "transactionTime": normalized.transaction_time.isoformat(sep=" "),
+            "direction": normalized.direction,
+            "amount": str(normalized.amount),
+        })
+        save_manual_annotation(session, transaction, label_ids)
+    except Exception:
+        session.rollback()
+        shutil.rmtree(batch_dir, ignore_errors=True)
+        raise
+    return transaction

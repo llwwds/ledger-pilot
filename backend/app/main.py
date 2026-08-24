@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
+from typing import Literal
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,12 +24,12 @@ from .annotations import (
     seed_label_catalog, transaction_assignments,
 )
 from .database import Base, build_engine, build_session_factory
-from .importers import ExpandedUpload, ImportFormatError, expand_upload, parse_upload
+from .importers import ExpandedUpload, ImportFormatError, NormalizedTransaction, expand_upload, parse_upload
 from .models import (
     AuditLog, Label, LabelDimension, MerchantRule, Transaction,
     TransactionLabelAssignment, utc_now,
 )
-from .services import persist_import
+from .services import persist_import, persist_manual_transaction
 
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
@@ -92,6 +93,22 @@ class RulePatch(BaseModel):
 
 class AnnotationSave(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    label_ids: list[int] = []
+
+
+class ManualTransactionCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    transaction_time: datetime
+    direction: Literal["收入", "支出"]
+    amount: Decimal = Field(gt=0, max_digits=14, decimal_places=2)
+    counterparty: str | None = Field(None, max_length=256)
+    summary: str = Field(min_length=1, max_length=256)
+    category: str | None = Field(None, max_length=96)
+    payment_channel: str | None = Field(None, max_length=64)
+    payment_method: str | None = Field(None, max_length=256)
+    counterparty_account: str | None = Field(None, max_length=256)
+    reference_id: str | None = Field(None, min_length=1, max_length=128)
+    note: str | None = Field(None, max_length=1000)
     label_ids: list[int] = []
 
 
@@ -189,7 +206,7 @@ def create_app(*, database_url: str | None = None, data_root: str | Path | None 
         yield
         engine.dispose()
 
-    application = FastAPI(title="Ledger Pilot API", version="1.0.0", lifespan=lifespan)
+    application = FastAPI(title="Ledger Pilot API", version="1.1.0", lifespan=lifespan)
     application.state.engine = engine
     application.state.data_root = resolved_data_root
     origins = [item.strip() for item in os.getenv(
@@ -381,6 +398,43 @@ def create_app(*, database_url: str | None = None, data_root: str | Path | None 
         except ValueError as exc:
             session.rollback(); raise HTTPException(status_code=422, detail=str(exc)) from exc
         return {"transaction": _transaction_item(session, transaction), "assignments": assignments}
+
+    @application.post("/api/transactions/manual", status_code=201)
+    def create_manual_transaction(
+        body: ManualTransactionCreate,
+        session: Session = Depends(session_dependency),
+    ) -> dict[str, object]:
+        reference_id = (body.reference_id or f"manual-{uuid.uuid4()}").strip()
+        normalized = NormalizedTransaction(
+            source_platform="手动",
+            transaction_time=body.transaction_time.replace(tzinfo=None),
+            direction=body.direction,
+            amount=body.amount.quantize(Decimal("0.01")),
+            counterparty=body.counterparty.strip() if body.counterparty else None,
+            item_description=body.summary.strip(),
+            payment_method=body.payment_method.strip() if body.payment_method else None,
+            payment_channel=body.payment_channel.strip() if body.payment_channel else None,
+            transaction_status="手动记录",
+            status_category="成功",
+            transaction_id=reference_id,
+            merchant_order_id=None,
+            transaction_type=body.summary.strip(),
+            source_category=body.category.strip() if body.category else None,
+            counterparty_account=body.counterparty_account.strip() if body.counterparty_account else None,
+            note=body.note.strip() if body.note else None,
+        )
+        try:
+            transaction = persist_manual_transaction(
+                session,
+                normalized=normalized,
+                evidence={**body.model_dump(mode="json", exclude={"label_ids"}), "transaction_id": reference_id},
+                label_ids=list(dict.fromkeys(body.label_ids)),
+                data_root=resolved_data_root,
+            )
+        except ValueError as exc:
+            status = 409 if "已经记录" in str(exc) else 422
+            raise HTTPException(status_code=status, detail=str(exc)) from exc
+        return _transaction_item(session, transaction)
 
     def filtered_transactions(month: str | None, session: Session) -> list[Transaction]:
         start, end = _month_bounds(month)

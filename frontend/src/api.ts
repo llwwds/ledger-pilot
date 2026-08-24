@@ -1,4 +1,4 @@
-import type { AnnotationData, DashboardData, ImportResult, LabelDimension, LabelNode, MerchantRule, Transaction } from './types'
+import type { AnnotationData, DashboardData, ImportResult, LabelDimension, LabelNode, ManualTransactionInput, MerchantRule, Transaction } from './types'
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? ''
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -27,6 +27,7 @@ export const updateLabel = (id: number, body: object) => request<LabelNode>(`/ap
 export const deleteLabel = (id: number) => request<{ disposition: string; references: number; children: number }>(`/api/labels/${id}`, { method: 'DELETE' })
 export const getAnnotation = (id: number) => request<AnnotationData>(`/api/transactions/${id}/annotation`)
 export const saveAnnotation = (id: number, labelIds: number[]) => request<AnnotationData>(`/api/transactions/${id}/annotation`, json('PUT', { label_ids: labelIds }))
+export const createManualTransaction = (body: ManualTransactionInput) => request<Transaction>('/api/transactions/manual', json('POST', body))
 export const getRules = () => request<MerchantRule[]>('/api/rules')
 export const createRule = (body: object) => request<MerchantRule>('/api/rules', json('POST', body))
 export const updateRule = (id: number, body: object) => request<MerchantRule>(`/api/rules/${id}`, json('PATCH', body))

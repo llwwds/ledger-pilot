@@ -16,3 +16,8 @@ export interface LabelDimension { id: string; key: string; name: string; notes?:
 export interface AssignmentSet { manual: AssignedLabel[]; rule: AssignedLabel[]; effective: AssignedLabel[]; matchedRuleId?: number | null; confirmedDimensionIds: string[] }
 export interface AnnotationData { transaction: Transaction; assignments: AssignmentSet }
 export interface MerchantRule { id: number; name: string; sourcePlatform?: string; counterpartyExact: string; labelIds: number[]; notes?: string; enabled: boolean }
+export interface ManualTransactionInput {
+  transaction_time: string; direction: '收入' | '支出'; amount: string; counterparty?: string
+  summary: string; category?: string; payment_channel?: string; payment_method?: string
+  counterparty_account?: string; reference_id?: string; note?: string; label_ids: number[]
+}

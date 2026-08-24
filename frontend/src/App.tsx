@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Area, AreaChart, CartesianGrid, Cell, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import {
-  createDimension, createLabel, createRule, deleteDimension, deleteLabel, deleteRule,
+  createDimension, createLabel, createManualTransaction, createRule, deleteDimension, deleteLabel, deleteRule,
   getAnnotation, getDashboard, getLabelCatalog, getRules, getTransactions, importStatements,
   saveAnnotation, updateDimension, updateLabel, updateRule,
 } from './api'
-import type { AnnotationData, DashboardData, DistributionItem, LabelDimension, LabelNode, MerchantRule, Transaction } from './types'
+import type { AnnotationData, DashboardData, DistributionItem, LabelDimension, LabelNode, ManualTransactionInput, MerchantRule, Transaction } from './types'
 
 const money = new Intl.NumberFormat('zh-CN', { style: 'currency', currency: 'CNY' })
 const compactMoney = new Intl.NumberFormat('zh-CN', { notation: 'compact', maximumFractionDigits: 1 })
@@ -15,6 +15,7 @@ type View = 'dashboard' | 'labels' | 'rules'
 function currentMonth() { const now = new Date(); return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}` }
 function shiftMonth(value: string, offset: number) { const [year, month] = value.split('-').map(Number); const date = new Date(year, month - 1 + offset, 1); return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}` }
 function monthName(value: string) { const [year, month] = value.split('-'); return `${year} 年 ${Number(month)} 月` }
+function localDateTime() { const date = new Date(); date.setMinutes(date.getMinutes() - date.getTimezoneOffset()); return date.toISOString().slice(0, 19) }
 
 function App() {
   const [view, setView] = useState<View>('dashboard')
@@ -29,6 +30,7 @@ function App() {
   const [notice, setNotice] = useState('')
   const [busy, setBusy] = useState(false)
   const [pendingArchives, setPendingArchives] = useState<File[]>([])
+  const [manualEntryOpen, setManualEntryOpen] = useState(false)
   const [showAll, setShowAll] = useState(false)
   const [category, setCategory] = useState('')
   const [channel, setChannel] = useState('')
@@ -65,6 +67,13 @@ function App() {
     if (showAll) setTransactions(await getTransactions({ month, category, channel, query }))
   }
 
+  async function handleManualSaved(transaction: Transaction) {
+    setManualEntryOpen(false)
+    setNotice('手动流水已记录，并保留原始快照与审计日志。')
+    const savedMonth = transaction.date.slice(0, 7)
+    if (savedMonth === month) await loadDashboard(); else setMonth(savedMonth)
+  }
+
   return <main>
     <header className="masthead">
       <button className="brand" onClick={() => setView('dashboard')} aria-label="Ledger Pilot 首页"><span className="brand-mark">LP</span><span><b>Ledger Pilot</b><small>本地账本工作台</small></span></button>
@@ -83,7 +92,7 @@ function App() {
       month={month} setMonth={setMonth} data={data} loading={loading} transactions={transactions}
       showAll={showAll} setShowAll={setShowAll} category={category} setCategory={setCategory}
       channel={channel} setChannel={setChannel} query={query} setQuery={setQuery}
-      busy={busy} onPickFiles={() => fileRef.current?.click()} onAnnotate={(id) => setAnnotationIndex(transactions.findIndex((item) => item.id === id))}
+      busy={busy} onPickFiles={() => fileRef.current?.click()} onManualEntry={() => setManualEntryOpen(true)} onAnnotate={(id) => setAnnotationIndex(transactions.findIndex((item) => item.id === id))}
     />}
     {view === 'labels' && <LabelManager catalog={catalog} reload={loadCatalog} report={report} announce={setNotice} />}
     {view === 'rules' && <RulesManager catalog={catalog} rules={rules} reload={loadRules} report={report} announce={setNotice} />}
@@ -100,8 +109,29 @@ function App() {
       onClose={() => { setPendingArchives([]); if (fileRef.current) fileRef.current.value = '' }}
       onSubmit={(password) => { const files = pendingArchives; setPendingArchives([]); void handleImport(files, password) }}
     />}
-    <footer><span>LEDGER PILOT / V1.0.0</span><p>规则给建议，最终选择由你确认；原始流水永不被标注修改。</p></footer>
+    {manualEntryOpen && <ManualEntryDialog catalog={catalog} onClose={() => setManualEntryOpen(false)} onSaved={handleManualSaved} report={report} />}
+    <footer><span>LEDGER PILOT / V1.1.0</span><p>规则给建议，最终选择由你确认；原始流水永不被标注修改。</p></footer>
   </main>
+}
+
+function ManualEntryDialog({ catalog, onClose, onSaved, report }: { catalog: LabelDimension[]; onClose: () => void; onSaved: (transaction: Transaction) => Promise<void>; report: (reason: unknown) => void }) {
+  const [draft, setDraft] = useState<ManualTransactionInput>({ transaction_time: localDateTime(), direction: '支出', amount: '', counterparty: '', summary: '', category: '', payment_channel: '', reference_id: '', note: '', label_ids: [] })
+  const [saving, setSaving] = useState(false)
+  const categoryDimension = catalog.find((item) => item.key === (draft.direction === '收入' ? 'income_category' : 'expense_category'))
+  const channelDimension = catalog.find((item) => item.key === 'payment_channel')
+  const categoryLabels = categoryDimension?.labels.filter((item) => item.enabled) ?? []
+  const channelLabels = channelDimension?.labels.filter((item) => item.enabled) ?? []
+  function selectLabel(kind: 'category' | 'payment_channel', value: string) {
+    const dimension = kind === 'category' ? categoryDimension : channelDimension
+    const dimensionIds = new Set(dimension?.labels.map((item) => item.id) ?? [])
+    const selected = dimension?.labels.find((item) => item.name === value)
+    setDraft((current) => ({ ...current, [kind]: value, label_ids: [...current.label_ids.filter((id) => !dimensionIds.has(id)), ...(selected ? [selected.id] : [])] }))
+  }
+  async function submit() {
+    setSaving(true)
+    try { await onSaved(await createManualTransaction(draft)) } catch (reason) { report(reason) } finally { setSaving(false) }
+  }
+  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><form className="manual-dialog" role="dialog" aria-modal="true" aria-labelledby="manual-title" onSubmit={(event) => { event.preventDefault(); void submit() }}><header><div><p className="eyebrow">MANUAL LEDGER</p><h2 id="manual-title">手动记一笔</h2><p>适合现金、银行卡直入或暂未出现在平台账单里的例外流水。</p></div><button type="button" className="close-button" onClick={onClose} aria-label="关闭">×</button></header><div className="manual-fields"><label>交易时间<input required step="1" type="datetime-local" value={draft.transaction_time} onChange={(event) => setDraft({ ...draft, transaction_time: event.target.value })} /></label><label>收支方向<select value={draft.direction} onChange={(event) => setDraft({ ...draft, direction: event.target.value as '收入' | '支出', category: '', label_ids: draft.label_ids.filter((id) => !categoryDimension?.labels.some((item) => item.id === id)) })}><option>支出</option><option>收入</option></select></label><label>金额<input required min="0.01" step="0.01" inputMode="decimal" type="number" value={draft.amount} onChange={(event) => setDraft({ ...draft, amount: event.target.value })} /></label><label>交易对方<input value={draft.counterparty} onChange={(event) => setDraft({ ...draft, counterparty: event.target.value })} /></label><label className="wide">交易摘要<input required value={draft.summary} onChange={(event) => setDraft({ ...draft, summary: event.target.value })} placeholder="例如：工资、午餐、现金报销" /></label><label>分类<select value={draft.category} onChange={(event) => selectLabel('category', event.target.value)}><option value="">未分类</option>{categoryLabels.map((item) => <option key={item.id}>{item.name}</option>)}</select></label><label>支付渠道<select value={draft.payment_channel} onChange={(event) => selectLabel('payment_channel', event.target.value)}><option value="">未识别</option>{channelLabels.map((item) => <option key={item.id}>{item.name}</option>)}</select></label><label className="wide">流水号（可选，用于防重复）<input value={draft.reference_id} onChange={(event) => setDraft({ ...draft, reference_id: event.target.value })} /></label><label className="wide">备注<textarea value={draft.note} onChange={(event) => setDraft({ ...draft, note: event.target.value })} /></label></div><footer className="dialog-actions"><button type="button" className="button secondary" onClick={onClose}>取消</button><button className="button primary" disabled={saving}>{saving ? '保存中…' : '记录流水'}</button></footer></form></div>
 }
 
 function ArchivePasswordDialog({ fileCount, onClose, onSubmit }: { fileCount: number; onClose: () => void; onSubmit: (password: string) => void }) {
@@ -113,14 +143,14 @@ function Dashboard(props: {
   month: string; setMonth: (value: string) => void; data: DashboardData | null; loading: boolean; transactions: Transaction[]
   showAll: boolean; setShowAll: (value: boolean) => void; category: string; setCategory: (value: string) => void
   channel: string; setChannel: (value: string) => void; query: string; setQuery: (value: string) => void
-  busy: boolean; onPickFiles: () => void; onAnnotate: (id: number) => void
+  busy: boolean; onPickFiles: () => void; onManualEntry: () => void; onAnnotate: (id: number) => void
 }) {
   const { month, data, transactions } = props
   const months = useMemo(() => [-2, -1, 0, 1, 2].map((offset) => shiftMonth(month, offset)), [month])
   const summary = data?.summary ?? { income: 0, expense: 0, net: 0 }
   return <>
     <section className="month-rail" aria-label="账期选择"><button className="rail-arrow" onClick={() => props.setMonth(shiftMonth(month, -1))} aria-label="上一个月">←</button><div className="month-track">{months.map((item) => <button key={item} className={item === month ? 'month-tick active' : 'month-tick'} onClick={() => props.setMonth(item)}><span>{item.slice(0, 4)}</span><b>{Number(item.slice(5))}月</b></button>)}</div><button className="rail-arrow" onClick={() => props.setMonth(shiftMonth(month, 1))} aria-label="下一个月">→</button></section>
-    <section className="page-heading"><div><p className="eyebrow">MONTHLY REVIEW / {month.replace('-', '.')}</p><h1>{monthName(month)}，逐笔把钱说清楚</h1><p>规则先填建议，你在流水里确认；看板始终标明结论来自人工还是规则。</p></div><div className="actions"><button className="button primary" onClick={props.onPickFiles} disabled={props.busy}>{props.busy ? '正在合并…' : '导入账单'}</button></div></section>
+    <section className="page-heading"><div><p className="eyebrow">MONTHLY REVIEW / {month.replace('-', '.')}</p><h1>{monthName(month)}，逐笔把钱说清楚</h1><p>规则先填建议，你在流水里确认；看板始终标明结论来自人工还是规则。</p></div><div className="actions"><button className="button secondary" onClick={props.onManualEntry}>手动记账</button><button className="button primary" onClick={props.onPickFiles} disabled={props.busy}>{props.busy ? '正在合并…' : '导入账单'}</button></div></section>
     {props.loading ? <DashboardSkeleton /> : data ? <>
       <section className="summary-strip"><article className="hero-amount"><p>本月支出</p><strong>{money.format(summary.expense)}</strong><span>共计流出</span></article><article><p>本月收入</p><strong>{money.format(summary.income)}</strong><span>已入账</span></article><article><p>收支净额</p><strong className={summary.net < 0 ? 'negative' : ''}>{summary.net >= 0 ? '+' : ''}{money.format(summary.net)}</strong><span>{summary.net >= 0 ? '本月有结余' : '支出高于收入'}</span></article></section>
       <section className="analysis-grid"><article className="panel trend-panel"><PanelHeading index="A" title="日收支轨迹" meta={`${data.trend.length} 个记账日`} />{data.trend.length ? <div className="chart-wrap"><ResponsiveContainer width="100%" height="100%"><AreaChart data={data.trend} margin={{ top: 10, right: 4, left: -20, bottom: 0 }}><CartesianGrid stroke="#d5dde0" strokeDasharray="2 5" vertical={false} /><XAxis dataKey="date" tickLine={false} axisLine={false} tick={{ fontSize: 11 }} tickFormatter={(value: string) => value.slice(-2)} /><YAxis tickLine={false} axisLine={false} tick={{ fontSize: 10 }} tickFormatter={(value: number) => compactMoney.format(value)} /><Tooltip formatter={(value) => money.format(Number(value))} /><Area type="monotone" dataKey="expense" name="支出" stroke="#c75d50" fill="#c75d5022" /><Area type="monotone" dataKey="income" name="收入" stroke="#526d7b" fill="transparent" /></AreaChart></ResponsiveContainer></div> : <EmptyState text="这个月还没有收支轨迹" />}</article><DistributionPanel index="B" title="支出分类" items={data.categories} /><DistributionPanel index="C" title="支付渠道" items={data.channels} /></section>
