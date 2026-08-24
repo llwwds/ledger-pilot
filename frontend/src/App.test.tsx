@@ -5,7 +5,7 @@ import App from './App'
 beforeEach(() => {
   vi.stubGlobal('fetch', vi.fn().mockImplementation((input: string) => Promise.resolve({
     ok: true,
-    json: async () => input.includes('label-catalog') || input.endsWith('/api/rules') ? [] : input.includes('/api/heatmaps') ? ({ year: 2026, expense: [], income: [] }) : ({
+    json: async () => input.includes('label-catalog') || input.endsWith('/api/rules') ? [] : input.includes('/api/heatmaps') ? ({ year: 2026, expense: [{ date: '2026-01-01', value: 180.32, count: 8 }], income: [{ date: '2026-01-01', value: 2079.96, count: 21 }] }) : ({
       summary: { income: 12000, expense: 3600, net: 8400 }, trend: [], categories: [], channels: [], recent: [],
     }),
   })))
@@ -24,6 +24,8 @@ describe('App', () => {
     expect(screen.getByText('流水标注')).toBeInTheDocument()
     expect(screen.getByText('花钱的热力图')).toBeInTheDocument()
     expect(screen.getByText('赚钱的热力图')).toBeInTheDocument()
+    expect(screen.getByLabelText('2026-01-01，¥180.32，8 笔')).toHaveClass('level-4')
+    expect(screen.getByLabelText('2026-01-01，¥2,079.96，21 笔')).toHaveClass('level-4')
   })
 
   it('打开手动记账弹窗并展示防重复流水号', async () => {
