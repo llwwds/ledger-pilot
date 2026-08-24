@@ -206,7 +206,7 @@ def create_app(*, database_url: str | None = None, data_root: str | Path | None 
         yield
         engine.dispose()
 
-    application = FastAPI(title="Ledger Pilot API", version="1.2.1", lifespan=lifespan)
+    application = FastAPI(title="Ledger Pilot API", version="1.2.2", lifespan=lifespan)
     application.state.engine = engine
     application.state.data_root = resolved_data_root
     origins = [item.strip() for item in os.getenv(
@@ -444,21 +444,53 @@ def create_app(*, database_url: str | None = None, data_root: str | Path | None 
 
     def dashboard_payload(month: str | None, session: Session) -> dict[str, object]:
         rows = filtered_transactions(month, session)
+        dimensions = list(session.scalars(
+            select(LabelDimension).where(LabelDimension.enabled.is_(True))
+            .order_by(LabelDimension.sort_order, LabelDimension.name)
+        ))
         income = sum(_money(row.amount) for row in rows if row.direction == "收入")
         expense = sum(_money(row.amount) for row in rows if row.direction == "支出")
         trend: dict[str, dict[str, float]] = defaultdict(lambda: {"income": 0, "expense": 0})
         categories: dict[str, float] = defaultdict(float); channels: dict[str, float] = defaultdict(float); items = []
+        dimension_values: dict[str, dict[str, float]] = {
+            dimension.id: defaultdict(float) for dimension in dimensions
+        }
         for row in rows:
             item = _transaction_item(session, row); items.append(item)
-            trend[row.transaction_time.date().isoformat()][_direction(row.direction)] += _money(row.amount)
+            amount = _money(row.amount)
+            trend[row.transaction_time.date().isoformat()][_direction(row.direction)] += amount
             if row.direction == "支出":
-                categories[str(item["category"])] += _money(row.amount); channels[str(item["channel"])] += _money(row.amount)
+                categories[str(item["category"])] += amount; channels[str(item["channel"])] += amount
+            effective_labels = item["effectiveLabels"]
+            for dimension in dimensions:
+                if dimension.key == "income_category" and row.direction != "收入":
+                    continue
+                if dimension.key == "expense_category" and row.direction != "支出":
+                    continue
+                names = [
+                    str(label["name"]) for label in effective_labels
+                    if label["dimensionId"] == dimension.id
+                ]
+                if not names and dimension.key in {"income_category", "expense_category"}:
+                    names = [str(item["category"])]
+                elif not names and dimension.key == "payment_channel":
+                    names = [str(item["channel"])]
+                for name in names:
+                    dimension_values[dimension.id][name] += amount
         session.commit()
         return {
             "summary": {"income": round(income, 2), "expense": round(expense, 2), "net": round(income - expense, 2)},
             "trend": [{"date": day, **values} for day, values in sorted(trend.items())],
             "categories": [{"name": name, "value": round(value, 2)} for name, value in sorted(categories.items(), key=lambda item: -item[1])],
             "channels": [{"name": name, "value": round(value, 2)} for name, value in sorted(channels.items(), key=lambda item: -item[1])],
+            "distributions": [{
+                "dimensionId": dimension.id,
+                "key": dimension.key,
+                "name": dimension.name,
+                "items": [{"name": name, "value": round(value, 2)} for name, value in sorted(
+                    dimension_values[dimension.id].items(), key=lambda item: -item[1]
+                )],
+            } for dimension in dimensions],
             "recent": items[:10],
         }
 

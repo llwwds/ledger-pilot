@@ -131,7 +131,7 @@ function App() {
       onSubmit={(password) => { const files = pendingArchives; setPendingArchives([]); void handleImport(files, password) }}
     />}
     {manualEntryOpen && <ManualEntryDialog catalog={catalog} onClose={() => setManualEntryOpen(false)} onSaved={handleManualSaved} report={report} />}
-    <footer><span>LEDGER PILOT / V1.2.1</span><p>规则给建议，最终选择由你确认；原始流水永不被标注修改。</p></footer>
+    <footer><span>LEDGER PILOT / V1.2.2</span><p>规则给建议，最终选择由你确认；原始流水永不被标注修改。</p></footer>
   </main>
 }
 
@@ -169,14 +169,18 @@ function Dashboard(props: {
   const { month, data, transactions } = props
   const months = useMemo(() => [-2, -1, 0, 1, 2].map((offset) => shiftMonth(month, offset)), [month])
   const summary = data?.summary ?? { income: 0, expense: 0, net: 0 }
+  const distributions = data?.distributions ?? (data ? [
+    { dimensionId: 'legacy-expense-category', key: 'expense_category', name: '支出分类', items: data.categories },
+    { dimensionId: 'legacy-payment-channel', key: 'payment_channel', name: '支付渠道', items: data.channels },
+  ] : [])
   return <>
     <section className="month-rail" aria-label="账期选择"><button className="rail-arrow" onClick={() => props.setMonth(shiftMonth(month, -1))} aria-label="上一个月">←</button><div className="month-track">{months.map((item) => <button key={item} className={item === month ? 'month-tick active' : 'month-tick'} onClick={() => props.setMonth(item)}><span>{item.slice(0, 4)}</span><b>{Number(item.slice(5))}月</b></button>)}</div><button className="rail-arrow" onClick={() => props.setMonth(shiftMonth(month, 1))} aria-label="下一个月">→</button></section>
     <section className="page-heading"><div><p className="eyebrow">MONTHLY REVIEW / {month.replace('-', '.')}</p><h1>{monthName(month)}，逐笔把钱说清楚</h1><p>规则先填建议，你在流水里确认；看板始终标明结论来自人工还是规则。</p></div><div className="actions"><button className="button secondary" onClick={props.onManualEntry}>手动记账</button><button className="button primary" onClick={props.onPickFiles} disabled={props.busy}>{props.busy ? '正在合并…' : '导入账单'}</button></div></section>
     {props.loading ? <DashboardSkeleton /> : data ? <>
       <section className="summary-strip"><article className="hero-amount"><p>本月支出</p><strong>{money.format(summary.expense)}</strong><span>共计流出</span></article><article><p>本月收入</p><strong>{money.format(summary.income)}</strong><span>已入账</span></article><article><p>收支净额</p><strong className={summary.net < 0 ? 'negative' : ''}>{summary.net >= 0 ? '+' : ''}{money.format(summary.net)}</strong><span>{summary.net >= 0 ? '本月有结余' : '支出高于收入'}</span></article></section>
-      <section className="analysis-grid"><article className="panel trend-panel"><PanelHeading index="A" title="日收支轨迹" meta={`${data.trend.length} 个记账日`} />{data.trend.length ? <div className="chart-wrap"><ResponsiveContainer width="100%" height="100%"><AreaChart data={data.trend} margin={{ top: 10, right: 4, left: -20, bottom: 0 }}><CartesianGrid stroke="#d5dde0" strokeDasharray="2 5" vertical={false} /><XAxis dataKey="date" tickLine={false} axisLine={false} tick={{ fontSize: 11 }} tickFormatter={(value: string) => value.slice(-2)} /><YAxis tickLine={false} axisLine={false} tick={{ fontSize: 10 }} tickFormatter={(value: number) => compactMoney.format(value)} /><Tooltip formatter={(value) => money.format(Number(value))} /><Area type="monotone" dataKey="expense" name="支出" stroke="#c75d50" fill="#c75d5022" /><Area type="monotone" dataKey="income" name="收入" stroke="#526d7b" fill="transparent" /></AreaChart></ResponsiveContainer></div> : <EmptyState text="这个月还没有收支轨迹" />}</article><DistributionPanel index="B" title="支出分类" items={data.categories} /><DistributionPanel index="C" title="支付渠道" items={data.channels} /></section>
+      <section className="analysis-stack"><article className="panel trend-panel"><PanelHeading index="A" title="日收支轨迹" meta={`${data.trend.length} 个记账日`} />{data.trend.length ? <div className="chart-wrap"><ResponsiveContainer width="100%" height="100%"><AreaChart data={data.trend} margin={{ top: 10, right: 4, left: -20, bottom: 0 }}><CartesianGrid stroke="#d5dde0" strokeDasharray="2 5" vertical={false} /><XAxis dataKey="date" tickLine={false} axisLine={false} tick={{ fontSize: 11 }} tickFormatter={(value: string) => value.slice(-2)} /><YAxis tickLine={false} axisLine={false} tick={{ fontSize: 10 }} tickFormatter={(value: number) => compactMoney.format(value)} /><Tooltip formatter={(value) => money.format(Number(value))} /><Area type="monotone" dataKey="expense" name="支出" stroke="#c75d50" fill="#c75d5022" /><Area type="monotone" dataKey="income" name="收入" stroke="#526d7b" fill="transparent" /></AreaChart></ResponsiveContainer></div> : <EmptyState text="这个月还没有收支轨迹" />}</article><div className="distribution-grid">{distributions.map((distribution, index) => <DistributionPanel key={distribution.dimensionId} index={panelIndex(index + 1)} title={distribution.name} items={distribution.items} />)}</div></section>
       <AnnualHeatmaps data={props.heatmaps} year={Number(month.slice(0, 4))} loading={props.heatmapLoading} error={props.heatmapError} />
-      <section className="ledger-section"><div className="ledger-heading"><PanelHeading index="D" title="流水标注" meta={`${transactions.length} 条`} /><button className="text-button" onClick={() => props.setShowAll(!props.showAll)}>{props.showAll ? '收起筛选' : '查看并筛选全部'} ↗</button></div>{props.showAll && <div className="filters"><label><span>搜索</span><input value={props.query} onChange={(event) => props.setQuery(event.target.value)} placeholder="商户、商品或备注" /></label><label><span>分类</span><select value={props.category} onChange={(event) => props.setCategory(event.target.value)}><option value="">全部分类</option>{data.categories.map((item) => <option key={item.name}>{item.name}</option>)}</select></label><label><span>渠道</span><select value={props.channel} onChange={(event) => props.setChannel(event.target.value)}><option value="">全部渠道</option>{data.channels.map((item) => <option key={item.name}>{item.name}</option>)}</select></label></div>}<TransactionTable items={transactions} onAnnotate={props.onAnnotate} /></section>
+      <section className="ledger-section"><div className="ledger-heading"><PanelHeading index={panelIndex(distributions.length + 1)} title="流水标注" meta={`${transactions.length} 条`} /><button className="text-button" onClick={() => props.setShowAll(!props.showAll)}>{props.showAll ? '收起筛选' : '查看并筛选全部'} ↗</button></div>{props.showAll && <div className="filters"><label><span>搜索</span><input value={props.query} onChange={(event) => props.setQuery(event.target.value)} placeholder="商户、商品或备注" /></label><label><span>分类</span><select value={props.category} onChange={(event) => props.setCategory(event.target.value)}><option value="">全部分类</option>{data.categories.map((item) => <option key={item.name}>{item.name}</option>)}</select></label><label><span>渠道</span><select value={props.channel} onChange={(event) => props.setChannel(event.target.value)}><option value="">全部渠道</option>{data.channels.map((item) => <option key={item.name}>{item.name}</option>)}</select></label></div>}<TransactionTable items={transactions} onAnnotate={props.onAnnotate} /></section>
     </> : <EmptyState text="账本暂时没有这个月的数据，请先导入账单" />}
   </>
 }
@@ -227,6 +231,13 @@ function treeOptions(labels: LabelNode[]) {
   const result: { label: LabelNode; depth: number }[] = []
   const visit = (parentId: number | null, depth: number) => labels.filter((label) => label.parentId === parentId).sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name)).forEach((label) => { result.push({ label, depth }); visit(label.id, depth + 1) })
   visit(null, 0); return result
+}
+
+function panelIndex(index: number) {
+  let value = index + 1
+  let result = ''
+  while (value > 0) { value -= 1; result = String.fromCharCode(65 + value % 26) + result; value = Math.floor(value / 26) }
+  return result
 }
 
 function LabelManager({ catalog, reload, report, announce }: { catalog: LabelDimension[]; reload: () => Promise<void>; report: (reason: unknown) => void; announce: (value: string) => void }) {

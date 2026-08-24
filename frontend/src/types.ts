@@ -1,6 +1,7 @@
 export interface Summary { income: number; expense: number; net: number }
 export interface TrendPoint { date: string; income: number; expense: number }
 export interface DistributionItem { name: string; value: number }
+export interface DashboardDistribution { dimensionId: string; key: string; name: string; items: DistributionItem[] }
 export interface AssignedLabel { id: number; name: string; dimensionId: string; dimensionKey: string; parentId?: number | null; source: 'manual' | 'rule' }
 export interface Transaction {
   id: number; date: string; merchant: string; counterparty?: string; itemDescription?: string; note?: string
@@ -9,7 +10,7 @@ export interface Transaction {
   effectiveLabels: AssignedLabel[]; sourcePlatform: string; transactionId: string; transactionType?: string
   sourceCategory?: string; paymentMethod?: string; status: string
 }
-export interface DashboardData { summary: Summary; trend: TrendPoint[]; categories: DistributionItem[]; channels: DistributionItem[]; recent: Transaction[] }
+export interface DashboardData { summary: Summary; trend: TrendPoint[]; categories: DistributionItem[]; channels: DistributionItem[]; distributions?: DashboardDistribution[]; recent: Transaction[] }
 export interface HeatmapPoint { date: string; value: number; count: number }
 export interface HeatmapData { year: number; expense: HeatmapPoint[]; income: HeatmapPoint[] }
 export interface ImportResult { imported: number; merged: number; skipped: number }

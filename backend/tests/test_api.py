@@ -85,6 +85,11 @@ def test_rule_prefill_manual_override_dashboard_and_transactions(client: TestCli
     assert payload["summary"] == {"income": 6.0, "expense": 14.0, "net": -8.0}
     assert {item["name"] for item in payload["categories"]} >= {"交通"}
     assert sum(item["value"] for item in payload["channels"]) == 14.0
+    distributions = {item["key"]: item for item in payload["distributions"]}
+    assert list(distributions) == ["payment_channel", "business_type", "income_category", "expense_category", "special_tag"]
+    assert {item["name"] for item in distributions["expense_category"]["items"]} >= {"交通"}
+    assert sum(item["value"] for item in distributions["income_category"]["items"]) == 6.0
+    assert distributions["special_tag"]["items"] == []
     assert len(payload["recent"]) == 3
     assert all("labelSource" in item for item in payload["recent"])
 
@@ -109,6 +114,8 @@ def test_arbitrary_label_tree_crud_and_safe_delete(client: TestClient) -> None:
     })
     assert dimension.status_code == 201, dimension.text
     dimension_id = dimension.json()["id"]
+    dashboard_dimensions = client.get("/api/dashboard", params={"month": "2026-07"}).json()["distributions"]
+    assert any(item["key"] == "project" and item["items"] == [] for item in dashboard_dimensions)
     parent = client.post("/api/labels", json={
         "dimension_id": dimension_id, "name": "学习", "notes": "能力建设",
     })
