@@ -1,0 +1,22 @@
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+
+# Node
+node_modules/
+dist/
+coverage/
+
+# Local runtime data and secrets
+.env
+.env.*
+!.env.example
+data/
+*.db
+*.sqlite
+*.sqlite3
