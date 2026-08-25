@@ -68,11 +68,19 @@ def test_rule_prefill_manual_override_dashboard_and_transactions(client: TestCli
     meituan = next(item for item in all_transactions if item["merchant"] == "美团")
     suggestion = client.get(f"/api/transactions/{meituan['id']}/annotation").json()
     assert food["id"] in [item["id"] for item in suggestion["assignments"]["rule"]]
+    pending_with_rule = client.get("/api/transactions", params={
+        "month": "2026-07", "annotation_status": "pending",
+    }).json()
+    assert meituan["id"] in [item["id"] for item in pending_with_rule["items"]]
 
     saved = client.put(f"/api/transactions/{meituan['id']}/annotation", json={"label_ids": [transport["id"]]})
     assert saved.status_code == 200, saved.text
     assert saved.json()["transaction"]["category"] == "交通"
     assert saved.json()["transaction"]["categorySource"] == "manual"
+    pending_after_save = client.get("/api/transactions", params={
+        "month": "2026-07", "annotation_status": "pending",
+    }).json()
+    assert meituan["id"] not in [item["id"] for item in pending_after_save["items"]]
 
     # Re-reading recomputes rules but never overwrites the manual result.
     reread = client.get(f"/api/transactions/{meituan['id']}/annotation").json()
@@ -106,6 +114,48 @@ def test_rule_prefill_manual_override_dashboard_and_transactions(client: TestCli
     assert cleared.status_code == 200
     assert cleared.json()["transaction"]["category"] == "未分类"
     assert cleared.json()["transaction"]["labelSource"] == "manual"
+
+
+def test_batch_annotation_is_atomic_and_removes_completed_items_from_pending_queue(client: TestClient) -> None:
+    _import_wechat(client)
+    catalog = client.get("/api/label-catalog").json()
+    business = next(dimension for dimension in catalog if dimension["key"] == "business_type")
+    consumption = next(label for label in business["labels"] if label["name"] == "消费")
+    expense = next(dimension for dimension in catalog if dimension["key"] == "expense_category")
+    food = next(label for label in expense["labels"] if label["name"] == "餐饮")
+    pending = client.get("/api/transactions", params={
+        "month": "2026-07", "annotation_status": "pending",
+    }).json()
+    assert pending["total"] == 2
+    expense_item = next(item for item in pending["items"] if item["direction"] == "expense")
+    income_item = next(item for item in pending["items"] if item["direction"] == "income")
+
+    rejected = client.put("/api/annotations/batch", json={
+        "transaction_ids": [expense_item["id"], income_item["id"]],
+        "label_ids": [food["id"]],
+    })
+    assert rejected.status_code == 422
+    assert client.get("/api/transactions", params={
+        "month": "2026-07", "annotation_status": "pending",
+    }).json()["total"] == 2
+    assert "annotation_saved" not in [item["eventType"] for item in client.get("/api/audit-logs").json()]
+
+    saved = client.put("/api/annotations/batch", json={
+        "transaction_ids": [expense_item["id"], expense_item["id"], income_item["id"]],
+        "label_ids": [consumption["id"]],
+    })
+    assert saved.status_code == 200, saved.text
+    assert saved.json() == {"updated": 2}
+    assert client.get("/api/transactions", params={
+        "month": "2026-07", "annotation_status": "pending",
+    }).json()["total"] == 0
+    completed = client.get("/api/transactions", params={
+        "month": "2026-07", "annotation_status": "completed",
+    }).json()
+    assert completed["total"] == 2
+    assert all(item["labelSource"] == "manual" for item in completed["items"])
+    events = [item["eventType"] for item in client.get("/api/audit-logs").json()]
+    assert events.count("annotation_saved") == 2
 
 
 def test_arbitrary_label_tree_crud_and_safe_delete(client: TestClient) -> None:

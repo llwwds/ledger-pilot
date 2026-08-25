@@ -230,7 +230,13 @@ def transaction_assignments(session: Session, transaction: Transaction, *, sync_
     }
 
 
-def save_manual_annotation(session: Session, transaction: Transaction, label_ids: list[int]) -> dict:
+def save_manual_annotation(
+    session: Session,
+    transaction: Transaction,
+    label_ids: list[int],
+    *,
+    commit: bool = True,
+) -> dict:
     labels = list(session.scalars(
         select(Label).where(Label.id.in_(label_ids), Label.enabled.is_(True))
     )) if label_ids else []
@@ -277,7 +283,8 @@ def save_manual_annotation(session: Session, transaction: Transaction, label_ids
     session.flush()
     after = transaction_assignments(session, transaction, sync_rules=False)["manual"]
     audit(session, "annotation_saved", "transaction", transaction.id, {"before": before, "after": after})
-    session.commit()
+    if commit:
+        session.commit()
     return transaction_assignments(session, transaction)
 
 

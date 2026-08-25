@@ -96,6 +96,12 @@ class AnnotationSave(BaseModel):
     label_ids: list[int] = []
 
 
+class BatchAnnotationSave(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    transaction_ids: list[int] = Field(min_length=1, max_length=500)
+    label_ids: list[int] = []
+
+
 class ManualTransactionCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     transaction_time: datetime
@@ -206,7 +212,7 @@ def create_app(*, database_url: str | None = None, data_root: str | Path | None 
         yield
         engine.dispose()
 
-    application = FastAPI(title="Ledger Pilot API", version="1.3.0", lifespan=lifespan)
+    application = FastAPI(title="Ledger Pilot API", version="1.4.0", lifespan=lifespan)
     application.state.engine = engine
     application.state.data_root = resolved_data_root
     origins = [item.strip() for item in os.getenv(
@@ -399,6 +405,29 @@ def create_app(*, database_url: str | None = None, data_root: str | Path | None 
             session.rollback(); raise HTTPException(status_code=422, detail=str(exc)) from exc
         return {"transaction": _transaction_item(session, transaction), "assignments": assignments}
 
+    @application.put("/api/annotations/batch")
+    def put_batch_annotations(body: BatchAnnotationSave, session: Session = Depends(session_dependency)) -> dict[str, int]:
+        transaction_ids = list(dict.fromkeys(body.transaction_ids))
+        label_ids = list(dict.fromkeys(body.label_ids))
+        transactions = list(session.scalars(
+            select(Transaction).where(Transaction.id.in_(transaction_ids))
+        ))
+        if len(transactions) != len(transaction_ids):
+            raise HTTPException(status_code=404, detail="批量标注中包含不存在的流水")
+        by_id = {transaction.id: transaction for transaction in transactions}
+        try:
+            for transaction_id in transaction_ids:
+                save_manual_annotation(
+                    session,
+                    by_id[transaction_id],
+                    label_ids,
+                    commit=False,
+                )
+            session.commit()
+        except ValueError as exc:
+            session.rollback(); raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"updated": len(transaction_ids)}
+
     @application.post("/api/transactions/manual", status_code=201)
     def create_manual_transaction(
         body: ManualTransactionCreate,
@@ -527,8 +556,14 @@ def create_app(*, database_url: str | None = None, data_root: str | Path | None 
     @application.get("/api/transactions")
     def transactions(month: str | None = None, category: str | None = None, channel: str | None = None,
         query: str | None = None, source_platform: str | None = None, direction: str | None = None,
+        annotation_status: Literal["pending", "completed"] | None = None,
         page: int = Query(1, ge=1), page_size: int = Query(100, ge=1, le=500), session: Session = Depends(session_dependency)) -> dict[str, object]:
-        items = [_transaction_item(session, row) for row in filtered_transactions(month, session)]
+        rows = filtered_transactions(month, session)
+        if annotation_status == "pending":
+            rows = [row for row in rows if row.labeled_at is None]
+        elif annotation_status == "completed":
+            rows = [row for row in rows if row.labeled_at is not None]
+        items = [_transaction_item(session, row) for row in rows]
         normalized_query = (query or "").casefold()
         items = [item for item in items if (
             (not category or item["category"] == category) and (not channel or item["channel"] == channel)

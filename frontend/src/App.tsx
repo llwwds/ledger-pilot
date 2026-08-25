@@ -3,13 +3,13 @@ import { Area, AreaChart, CartesianGrid, Cell, Pie, PieChart, ResponsiveContaine
 import {
   createDimension, createLabel, createManualTransaction, createRule, deleteDimension, deleteLabel, deleteRule,
   getAnnotation, getDashboard, getHeatmaps, getLabelCatalog, getRules, getTransactions, importStatements,
-  saveAnnotation, updateDimension, updateLabel, updateRule,
+  saveAnnotation, saveBatchAnnotations, updateDimension, updateLabel, updateRule,
 } from './api'
 import type { AnnotationData, DashboardData, DistributionItem, HeatmapData, HeatmapPoint, LabelDimension, LabelNode, ManualTransactionInput, MerchantRule, Transaction } from './types'
 
 const money = new Intl.NumberFormat('zh-CN', { style: 'currency', currency: 'CNY' })
 const compactMoney = new Intl.NumberFormat('zh-CN', { notation: 'compact', maximumFractionDigits: 1 })
-type View = 'dashboard' | 'labels' | 'rules'
+type View = 'dashboard' | 'annotations' | 'labels' | 'rules'
 type Theme = 'ledger' | 'glass'
 const THEME_STORAGE_KEY = 'ledger-pilot-theme'
 const THEME_CHARTS: Record<Theme, { pie: string[]; grid: string; expense: string; expenseFill: string; income: string }> = {
@@ -33,14 +33,17 @@ function App() {
   const [catalog, setCatalog] = useState<LabelDimension[]>([])
   const [rules, setRules] = useState<MerchantRule[]>([])
   const [transactions, setTransactions] = useState<Transaction[]>([])
+  const [transactionTotal, setTransactionTotal] = useState(0)
+  const [annotationLoading, setAnnotationLoading] = useState(false)
   const [annotationIndex, setAnnotationIndex] = useState<number | null>(null)
+  const [selectedTransactionIds, setSelectedTransactionIds] = useState<number[]>([])
+  const [batchEditorOpen, setBatchEditorOpen] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [busy, setBusy] = useState(false)
   const [pendingArchives, setPendingArchives] = useState<File[]>([])
   const [manualEntryOpen, setManualEntryOpen] = useState(false)
-  const [showAll, setShowAll] = useState(false)
   const [category, setCategory] = useState('')
   const [channel, setChannel] = useState('')
   const [query, setQuery] = useState('')
@@ -74,17 +77,31 @@ function App() {
   }, [heatmapYear])
   const loadDashboard = useCallback(async () => {
     setLoading(true); setError('')
-    try { const result = await getDashboard(month); setData(result); setTransactions(result.recent ?? []) }
-    catch (reason) { report(reason); setData(null); setTransactions([]) }
+    try { setData(await getDashboard(month)) }
+    catch (reason) { report(reason); setData(null) }
     finally { setLoading(false) }
   }, [month, report])
 
+  const loadAnnotationQueue = useCallback(async () => {
+    setAnnotationLoading(true); setError('')
+    try {
+      const result = await getTransactions({ month, category, channel, query, annotationStatus: 'pending' })
+      setTransactions(result.items)
+      setTransactionTotal(result.total)
+      setSelectedTransactionIds((current) => current.filter((id) => result.items.some((item) => item.id === id)))
+      return result.items
+    } catch (reason) {
+      report(reason); setTransactions([]); setTransactionTotal(0); setSelectedTransactionIds([])
+      return []
+    } finally { setAnnotationLoading(false) }
+  }, [month, category, channel, query, report])
+
   useEffect(() => { void Promise.all([loadDashboard(), loadHeatmaps(), loadCatalog(), loadRules()]).catch(report) }, [loadDashboard, loadHeatmaps, loadCatalog, loadRules, report])
   useEffect(() => {
-    if (!showAll || !data) return
-    const timer = window.setTimeout(() => { void getTransactions({ month, category, channel, query }).then(setTransactions).catch(report) }, 200)
+    if (view !== 'annotations') return
+    const timer = window.setTimeout(() => { void loadAnnotationQueue() }, 160)
     return () => window.clearTimeout(timer)
-  }, [showAll, data, month, category, channel, query, report])
+  }, [view, loadAnnotationQueue])
 
   async function handleImport(files: File[], archivePassword?: string) {
     if (!files.length) return
@@ -94,9 +111,18 @@ function App() {
     finally { setBusy(false); if (fileRef.current) fileRef.current.value = '' }
   }
 
-  const refreshAfterAnnotation = async () => {
-    await loadDashboard()
-    if (showAll) setTransactions(await getTransactions({ month, category, channel, query }))
+  const refreshAfterAnnotation = async (next: boolean) => {
+    const currentIndex = annotationIndex ?? 0
+    const [, pending] = await Promise.all([loadDashboard(), loadAnnotationQueue()])
+    setNotice('标注已保存，这笔流水已移出待标注队列。')
+    setAnnotationIndex(next && pending.length ? Math.min(currentIndex, pending.length - 1) : null)
+  }
+
+  const refreshAfterBatchAnnotation = async (updated: number) => {
+    setBatchEditorOpen(false)
+    setSelectedTransactionIds([])
+    setNotice(`已统一标注 ${updated} 笔流水，并移出待标注队列。`)
+    await Promise.all([loadDashboard(), loadAnnotationQueue()])
   }
 
   async function handleManualSaved(transaction: Transaction) {
@@ -111,6 +137,7 @@ function App() {
       <button className="brand" onClick={() => setView('dashboard')} aria-label="Ledger Pilot 首页"><span className="brand-mark">LP</span><span><b>Ledger Pilot</b><small>本地账本工作台</small></span></button>
       <nav className="main-nav" aria-label="主导航">
         <button className={view === 'dashboard' ? 'active' : ''} onClick={() => setView('dashboard')}>月度看板</button>
+        <button className={view === 'annotations' ? 'active' : ''} onClick={() => setView('annotations')}>流水标注</button>
         <button className={view === 'labels' ? 'active' : ''} onClick={() => setView('labels')}>标签管理</button>
         <button className={view === 'rules' ? 'active' : ''} onClick={() => setView('rules')}>预填规则</button>
       </nav>
@@ -125,20 +152,30 @@ function App() {
 
     <input ref={fileRef} className="sr-only" type="file" multiple accept=".csv,.xlsx,.zip" onChange={(event) => { const files = [...(event.target.files ?? [])]; if (files.some((file) => file.name.toLowerCase().endsWith('.zip'))) setPendingArchives(files); else void handleImport(files) }} />
     {view === 'dashboard' && <Dashboard
-      theme={theme} month={month} setMonth={setMonth} data={data} heatmaps={heatmaps} heatmapLoading={heatmapLoading} heatmapError={heatmapError} loading={loading} transactions={transactions}
-      showAll={showAll} setShowAll={setShowAll} category={category} setCategory={setCategory}
-      channel={channel} setChannel={setChannel} query={query} setQuery={setQuery}
-      busy={busy} onPickFiles={() => fileRef.current?.click()} onManualEntry={() => setManualEntryOpen(true)} onAnnotate={(id) => setAnnotationIndex(transactions.findIndex((item) => item.id === id))}
+      theme={theme} month={month} setMonth={setMonth} data={data} heatmaps={heatmaps} heatmapLoading={heatmapLoading} heatmapError={heatmapError} loading={loading}
+      busy={busy} onPickFiles={() => fileRef.current?.click()} onManualEntry={() => setManualEntryOpen(true)}
+    />}
+    {view === 'annotations' && <AnnotationQueuePage
+      month={month} setMonth={setMonth} data={data}
+      transactions={transactions} total={transactionTotal} loading={annotationLoading}
+      category={category} setCategory={setCategory} channel={channel} setChannel={setChannel}
+      query={query} setQuery={setQuery} selectedIds={selectedTransactionIds} setSelectedIds={setSelectedTransactionIds}
+      onAnnotate={(id) => setAnnotationIndex(transactions.findIndex((item) => item.id === id))}
+      onBatchAnnotate={() => setBatchEditorOpen(true)}
     />}
     {view === 'labels' && <LabelManager catalog={catalog} reload={loadCatalog} report={report} announce={setNotice} />}
     {view === 'rules' && <RulesManager catalog={catalog} rules={rules} reload={loadRules} report={report} announce={setNotice} />}
 
     {annotationIndex !== null && transactions[annotationIndex] && <AnnotationDialog
       transaction={transactions[annotationIndex]} catalog={catalog}
-      hasPrevious={annotationIndex > 0} hasNext={annotationIndex < transactions.length - 1}
+      hasPrevious={annotationIndex > 0} hasNext={transactions.length > 1}
       onPrevious={() => setAnnotationIndex((value) => value === null ? null : Math.max(0, value - 1))}
-      onNext={() => setAnnotationIndex((value) => value === null ? null : Math.min(transactions.length - 1, value + 1))}
+      onNext={() => setAnnotationIndex((value) => value === null ? null : (value + 1) % transactions.length)}
       onClose={() => setAnnotationIndex(null)} onSaved={refreshAfterAnnotation} report={report}
+    />}
+    {batchEditorOpen && selectedTransactionIds.length > 0 && <BatchAnnotationDialog
+      transactions={transactions.filter((item) => selectedTransactionIds.includes(item.id))}
+      catalog={catalog} onClose={() => setBatchEditorOpen(false)} onSaved={refreshAfterBatchAnnotation} report={report}
     />}
     {pendingArchives.length > 0 && <ArchivePasswordDialog
       fileCount={pendingArchives.length}
@@ -146,7 +183,7 @@ function App() {
       onSubmit={(password) => { const files = pendingArchives; setPendingArchives([]); void handleImport(files, password) }}
     />}
     {manualEntryOpen && <ManualEntryDialog catalog={catalog} onClose={() => setManualEntryOpen(false)} onSaved={handleManualSaved} report={report} />}
-    <footer><span>LEDGER PILOT / V1.3.0</span><p>规则给建议，最终选择由你确认；原始流水永不被标注修改。</p></footer>
+    <footer><span>LEDGER PILOT / V1.4.0</span><p>规则给建议，最终选择由你确认；原始流水永不被标注修改。</p></footer>
   </main>
 }
 
@@ -177,29 +214,30 @@ function ArchivePasswordDialog({ fileCount, onClose, onSubmit }: { fileCount: nu
 
 function Dashboard(props: {
   theme: Theme
-  month: string; setMonth: (value: string) => void; data: DashboardData | null; heatmaps: HeatmapData | null; heatmapLoading: boolean; heatmapError: string; loading: boolean; transactions: Transaction[]
-  showAll: boolean; setShowAll: (value: boolean) => void; category: string; setCategory: (value: string) => void
-  channel: string; setChannel: (value: string) => void; query: string; setQuery: (value: string) => void
-  busy: boolean; onPickFiles: () => void; onManualEntry: () => void; onAnnotate: (id: number) => void
+  month: string; setMonth: (value: string) => void; data: DashboardData | null; heatmaps: HeatmapData | null; heatmapLoading: boolean; heatmapError: string; loading: boolean
+  busy: boolean; onPickFiles: () => void; onManualEntry: () => void
 }) {
-  const { month, data, transactions, theme } = props
+  const { month, data, theme } = props
   const chartColors = THEME_CHARTS[theme]
-  const months = useMemo(() => [-2, -1, 0, 1, 2].map((offset) => shiftMonth(month, offset)), [month])
   const summary = data?.summary ?? { income: 0, expense: 0, net: 0 }
   const distributions = data?.distributions ?? (data ? [
     { dimensionId: 'legacy-expense-category', key: 'expense_category', name: '支出分类', items: data.categories },
     { dimensionId: 'legacy-payment-channel', key: 'payment_channel', name: '支付渠道', items: data.channels },
   ] : [])
   return <>
-    <section className="month-rail" aria-label="账期选择"><button className="rail-arrow" onClick={() => props.setMonth(shiftMonth(month, -1))} aria-label="上一个月">←</button><div className="month-track">{months.map((item) => <button key={item} className={item === month ? 'month-tick active' : 'month-tick'} onClick={() => props.setMonth(item)}><span>{item.slice(0, 4)}</span><b>{Number(item.slice(5))}月</b></button>)}</div><button className="rail-arrow" onClick={() => props.setMonth(shiftMonth(month, 1))} aria-label="下一个月">→</button></section>
+    <MonthRail month={month} setMonth={props.setMonth} />
     <section className="page-heading"><div><p className="eyebrow">MONTHLY REVIEW / {month.replace('-', '.')}</p><h1>{monthName(month)}，逐笔把钱说清楚</h1><p>规则先填建议，你在流水里确认；看板始终标明结论来自人工还是规则。</p></div><div className="actions"><button className="button secondary" onClick={props.onManualEntry}>手动记账</button><button className="button primary" onClick={props.onPickFiles} disabled={props.busy}>{props.busy ? '正在合并…' : '导入账单'}</button></div></section>
     {props.loading ? <DashboardSkeleton /> : data ? <>
       <section className="summary-strip"><article className="hero-amount"><p>本月支出</p><strong>{money.format(summary.expense)}</strong><span>共计流出</span></article><article><p>本月收入</p><strong>{money.format(summary.income)}</strong><span>已入账</span></article><article><p>收支净额</p><strong className={summary.net < 0 ? 'negative' : ''}>{summary.net >= 0 ? '+' : ''}{money.format(summary.net)}</strong><span>{summary.net >= 0 ? '本月有结余' : '支出高于收入'}</span></article></section>
       <section className="analysis-stack"><article className="panel trend-panel"><PanelHeading index="A" title="日收支轨迹" meta={`${data.trend.length} 个记账日`} />{data.trend.length ? <div className="chart-wrap"><ResponsiveContainer width="100%" height="100%"><AreaChart data={data.trend} margin={{ top: 10, right: 4, left: -20, bottom: 0 }}><CartesianGrid stroke={chartColors.grid} strokeDasharray="2 5" vertical={false} /><XAxis dataKey="date" tickLine={false} axisLine={false} tick={{ fontSize: 11 }} tickFormatter={(value: string) => value.slice(-2)} /><YAxis tickLine={false} axisLine={false} tick={{ fontSize: 10 }} tickFormatter={(value: number) => compactMoney.format(value)} /><Tooltip formatter={(value) => money.format(Number(value))} /><Area type="monotone" dataKey="expense" name="支出" stroke={chartColors.expense} fill={chartColors.expenseFill} /><Area type="monotone" dataKey="income" name="收入" stroke={chartColors.income} fill="transparent" /></AreaChart></ResponsiveContainer></div> : <EmptyState text="这个月还没有收支轨迹" />}</article><div className="distribution-grid">{distributions.map((distribution, index) => <DistributionPanel key={distribution.dimensionId} index={panelIndex(index + 1)} title={distribution.name} items={distribution.items} colors={chartColors.pie} />)}</div></section>
       <AnnualHeatmaps data={props.heatmaps} year={Number(month.slice(0, 4))} loading={props.heatmapLoading} error={props.heatmapError} />
-      <section className="ledger-section"><div className="ledger-heading"><PanelHeading index={panelIndex(distributions.length + 1)} title="流水标注" meta={`${transactions.length} 条`} /><button className="text-button" onClick={() => props.setShowAll(!props.showAll)}>{props.showAll ? '收起筛选' : '查看并筛选全部'} ↗</button></div>{props.showAll && <div className="filters"><label><span>搜索</span><input value={props.query} onChange={(event) => props.setQuery(event.target.value)} placeholder="商户、商品或备注" /></label><label><span>分类</span><select value={props.category} onChange={(event) => props.setCategory(event.target.value)}><option value="">全部分类</option>{data.categories.map((item) => <option key={item.name}>{item.name}</option>)}</select></label><label><span>渠道</span><select value={props.channel} onChange={(event) => props.setChannel(event.target.value)}><option value="">全部渠道</option>{data.channels.map((item) => <option key={item.name}>{item.name}</option>)}</select></label></div>}<TransactionTable items={transactions} onAnnotate={props.onAnnotate} /></section>
     </> : <EmptyState text="账本暂时没有这个月的数据，请先导入账单" />}
   </>
+}
+
+function MonthRail({ month, setMonth }: { month: string; setMonth: (value: string) => void }) {
+  const months = useMemo(() => [-2, -1, 0, 1, 2].map((offset) => shiftMonth(month, offset)), [month])
+  return <section className="month-rail" aria-label="账期选择"><button className="rail-arrow" onClick={() => setMonth(shiftMonth(month, -1))} aria-label="上一个月">←</button><div className="month-track">{months.map((item) => <button key={item} className={item === month ? 'month-tick active' : 'month-tick'} onClick={() => setMonth(item)}><span>{item.slice(0, 4)}</span><b>{Number(item.slice(5))}月</b></button>)}</div><button className="rail-arrow" onClick={() => setMonth(shiftMonth(month, 1))} aria-label="下一个月">→</button></section>
 }
 
 function AnnualHeatmaps({ data, year, loading, error }: { data: HeatmapData | null; year: number; loading: boolean; error: string }) {
@@ -222,13 +260,45 @@ function HeatmapCard({ title, tone, points, year }: { title: string; tone: 'expe
   return <article className={`heatmap-card ${tone}`}><header><div><p>{title}</p><strong>{money.format(total)}</strong></div><span>{points.length} 个活跃日</span></header>{points.length ? <><div className="heatmap-scroll"><div className="month-labels">{Array.from({ length: 12 }, (_, index) => <span key={index}>{index + 1}月</span>)}</div><div className="heatmap-layout"><div className="weekday-labels"><span>一</span><span>三</span><span>五</span><span>日</span></div><div className="heatmap-cells">{cells.map((cell, index) => cell ? <i key={cell.date} className={`level-${level(cell.point?.value ?? 0)}`} title={`${cell.date} · ${money.format(cell.point?.value ?? 0)} · ${cell.point?.count ?? 0} 笔`} aria-label={`${cell.date}，${money.format(cell.point?.value ?? 0)}，${cell.point?.count ?? 0} 笔`} /> : <i key={`blank-${index}`} className="blank" />)}</div></div></div><footer><span>少</span>{[0, 1, 2, 3, 4].map((item) => <i key={item} className={`level-${item}`} />)}<span>多</span><small>按金额对数分级</small></footer></> : <div className="heatmap-empty">{year} 年没有{tone === 'expense' ? '支出' : '收入'}流水</div>}</article>
 }
 
-function TransactionTable({ items, onAnnotate }: { items: Transaction[]; onAnnotate: (id: number) => void }) {
-  if (!items.length) return <EmptyState text="没有符合条件的流水" />
-  return <div className="table-wrap"><table><thead><tr><th>日期</th><th>交易摘要</th><th>分类</th><th>支付渠道</th><th>金额</th><th /></tr></thead><tbody>{items.map((item) => <tr key={item.id} onDoubleClick={() => onAnnotate(item.id)}><td>{item.date.slice(0, 16)}</td><td><strong>{item.merchant}</strong>{item.itemDescription && <small>{item.itemDescription}</small>}</td><td><span className="tag">{item.category}<i className={item.categorySource}>{item.categorySource === 'manual' ? '人工' : item.categorySource === 'rule' ? '规则' : '未确认'}</i></span></td><td>{item.channel}</td><td className={item.direction === 'expense' ? 'amount expense' : 'amount income'}>{item.direction === 'expense' ? '−' : '+'}{money.format(Math.abs(item.amount))}</td><td><button className="row-action" onClick={() => onAnnotate(item.id)}>标注</button></td></tr>)}</tbody></table></div>
+function AnnotationQueuePage(props: {
+  month: string; setMonth: (value: string) => void; data: DashboardData | null
+  transactions: Transaction[]; total: number; loading: boolean
+  category: string; setCategory: (value: string) => void; channel: string; setChannel: (value: string) => void
+  query: string; setQuery: (value: string) => void; selectedIds: number[]; setSelectedIds: (value: number[]) => void
+  onAnnotate: (id: number) => void; onBatchAnnotate: () => void
+}) {
+  const allSelected = props.transactions.length > 0 && props.transactions.every((item) => props.selectedIds.includes(item.id))
+  const categoryOptions = [...new Set([...(props.data?.categories.map((item) => item.name) ?? []), ...props.transactions.map((item) => item.category)])].filter((item) => item !== '未分类')
+  const channelOptions = [...new Set([...(props.data?.channels.map((item) => item.name) ?? []), ...props.transactions.map((item) => item.channel)])].filter((item) => item !== '未识别')
+  function toggleAll() {
+    props.setSelectedIds(allSelected ? [] : props.transactions.map((item) => item.id))
+  }
+  function toggleOne(id: number) {
+    props.setSelectedIds(props.selectedIds.includes(id) ? props.selectedIds.filter((item) => item !== id) : [...props.selectedIds, id])
+  }
+  const filtered = Boolean(props.query || props.category || props.channel)
+  return <>
+    <MonthRail month={props.month} setMonth={props.setMonth} />
+    <section className="annotation-page-heading"><div><p className="eyebrow">REVIEW QUEUE / {props.month.replace('-', '.')}</p><h1>先搜出一类，再一次标完</h1><p>列表只保留尚未人工确认的流水。搜索相似交易，多选后统一标注，保存即从队列移除。</p></div><div className="queue-count"><span>{filtered ? '当前匹配' : '当前待办'}</span><strong>{props.total}</strong><small>笔流水</small></div></section>
+    <section className="annotation-workspace" aria-label="待标注流水">
+      <div className="annotation-toolbar">
+        <label className="search-field"><span>搜索待标注流水</span><input value={props.query} onChange={(event) => props.setQuery(event.target.value)} placeholder="商户、商品或备注" /></label>
+        <label><span>分类</span><select value={props.category} onChange={(event) => props.setCategory(event.target.value)}><option value="">全部分类</option>{categoryOptions.map((item) => <option key={item}>{item}</option>)}</select></label>
+        <label><span>渠道</span><select value={props.channel} onChange={(event) => props.setChannel(event.target.value)}><option value="">全部渠道</option>{channelOptions.map((item) => <option key={item}>{item}</option>)}</select></label>
+        {filtered && <button className="clear-filters" onClick={() => { props.setQuery(''); props.setCategory(''); props.setChannel('') }}>清除筛选</button>}
+      </div>
+      <div className={`selection-dock ${props.selectedIds.length ? 'active' : ''}`} role="status">
+        <div><b>{props.selectedIds.length ? `已选 ${props.selectedIds.length} 笔` : '先搜索，再选择相似流水'}</b><span>{props.selectedIds.length ? '将为这些流水保存完全相同的人工标注' : '可逐笔处理，也可全选当前搜索结果'}</span></div>
+        {props.selectedIds.length > 0 && <div><button className="button ghost" onClick={() => props.setSelectedIds([])}>取消选择</button><button className="button primary" onClick={props.onBatchAnnotate}>统一标注 {props.selectedIds.length} 笔</button></div>}
+      </div>
+      {props.total > props.transactions.length && <p className="queue-limit">当前加载前 {props.transactions.length} 笔，共匹配 {props.total} 笔；可继续收紧搜索后分批处理。</p>}
+      {props.loading ? <DashboardSkeleton /> : props.transactions.length ? <div className="table-wrap annotation-table"><table><thead><tr><th className="select-cell"><input type="checkbox" checked={allSelected} onChange={toggleAll} aria-label="全选当前搜索结果" /></th><th>日期</th><th>交易摘要</th><th>分类</th><th>支付渠道</th><th>金额</th><th /></tr></thead><tbody>{props.transactions.map((item) => <tr key={item.id} className={props.selectedIds.includes(item.id) ? 'selected' : ''} onDoubleClick={() => props.onAnnotate(item.id)}><td className="select-cell"><input type="checkbox" checked={props.selectedIds.includes(item.id)} onChange={() => toggleOne(item.id)} aria-label={`选择 ${item.merchant} ${item.date.slice(0, 10)}`} /></td><td>{item.date.slice(0, 16)}</td><td><strong>{item.merchant}</strong>{item.itemDescription && <small>{item.itemDescription}</small>}</td><td><span className="tag">{item.category}<i className={item.categorySource}>{item.categorySource === 'rule' ? '规则' : '未确认'}</i></span></td><td>{item.channel}</td><td className={item.direction === 'expense' ? 'amount expense' : 'amount income'}>{item.direction === 'expense' ? '−' : '+'}{money.format(Math.abs(item.amount))}</td><td><button className="row-action" onClick={() => props.onAnnotate(item.id)}>标注此笔</button></td></tr>)}</tbody></table></div> : <div className="queue-empty"><span>✓</span><h2>{filtered ? '没有符合当前条件的待标注流水' : '这个月的待标注队列已清空'}</h2><p>{filtered ? '调整搜索词或清除筛选，继续处理其他流水。' : '人工确认过的流水不会再次出现；新导入的流水会自动进入这里。'}</p></div>}
+    </section>
+  </>
 }
 
 function AnnotationDialog({ transaction, catalog, hasPrevious, hasNext, onPrevious, onNext, onClose, onSaved, report }: {
-  transaction: Transaction; catalog: LabelDimension[]; hasPrevious: boolean; hasNext: boolean; onPrevious: () => void; onNext: () => void; onClose: () => void; onSaved: () => Promise<void>; report: (reason: unknown) => void
+  transaction: Transaction; catalog: LabelDimension[]; hasPrevious: boolean; hasNext: boolean; onPrevious: () => void; onNext: () => void; onClose: () => void; onSaved: (next: boolean) => Promise<void>; report: (reason: unknown) => void
 }) {
   const [annotation, setAnnotation] = useState<AnnotationData | null>(null)
   const [selected, setSelected] = useState<number[]>([])
@@ -240,8 +310,37 @@ function AnnotationDialog({ transaction, catalog, hasPrevious, hasNext, onPrevio
     if (dimension.selectionMode === 'single') setSelected((current) => [...current.filter((id) => !dimensionIds.has(id)), ...(labelId ? [labelId] : [])])
     else setSelected((current) => checked ? [...new Set([...current, labelId])] : current.filter((id) => id !== labelId))
   }
-  async function save(next: boolean) { setSaving(true); try { await saveAnnotation(transaction.id, selected); await onSaved(); if (next && hasNext) onNext(); else if (!next) onClose() } catch (reason) { report(reason) } finally { setSaving(false) } }
-  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><section className="annotation-dialog" role="dialog" aria-modal="true" aria-labelledby="annotation-title"><header><div><p className="eyebrow">人工确认 / {transaction.sourcePlatform}</p><h2 id="annotation-title">{transaction.merchant}</h2><p>{transaction.date.slice(0, 16)} · {money.format(transaction.amount)} · {transaction.direction === 'expense' ? '支出' : '收入'}</p></div><button className="close-button" onClick={onClose} aria-label="关闭">×</button></header><div className="fact-strip"><span>商品<b>{transaction.itemDescription || '—'}</b></span><span>支付原值<b>{transaction.paymentMethod || '—'}</b></span><span>平台分类<b>{transaction.sourceCategory || transaction.transactionType || '—'}</b></span></div>{!annotation ? <DashboardSkeleton /> : <div className="annotation-fields">{visibleDimensions.map((dimension) => <fieldset key={dimension.id}><legend>{dimension.name}<small>{dimension.selectionMode === 'multiple' ? '可多选' : '单选'}</small></legend>{dimension.selectionMode === 'single' ? <select value={dimension.labels.find((label) => selected.includes(label.id))?.id ?? ''} onChange={(event) => choose(dimension, Number(event.target.value))}><option value="">未选择</option>{treeOptions(dimension.labels).filter(({ label }) => label.enabled).map(({ label, depth }) => <option value={label.id} key={label.id}>{'— '.repeat(depth)}{label.name}</option>)}</select> : <div className="checkbox-grid">{treeOptions(dimension.labels).filter(({ label }) => label.enabled).map(({ label, depth }) => <label key={label.id} style={{ paddingLeft: depth * 14 }}><input type="checkbox" checked={selected.includes(label.id)} onChange={(event) => choose(dimension, label.id, event.target.checked)} />{label.name}</label>)}</div>}</fieldset>)}</div>}<div className="suggestion-note"><b>当前默认：</b>{annotation?.assignments.rule.map((item) => item.name).join('、') || '没有规则建议'}。保存后以人工结果为准，刷新规则也不会覆盖。</div><footer className="dialog-actions"><button className="button secondary" disabled={!hasPrevious || saving} onClick={onPrevious}>上一条</button><button className="button ghost" disabled={!hasNext || saving} onClick={onNext}>跳过</button><button className="button secondary" disabled={saving} onClick={() => void save(false)}>保存</button><button className="button primary" disabled={saving} onClick={() => void save(true)}>{saving ? '保存中…' : '保存并下一条'}</button></footer></section></div>
+  async function save(next: boolean) { setSaving(true); try { await saveAnnotation(transaction.id, selected); await onSaved(next) } catch (reason) { report(reason) } finally { setSaving(false) } }
+  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><section className="annotation-dialog" role="dialog" aria-modal="true" aria-labelledby="annotation-title"><header><div><p className="eyebrow">人工确认 / {transaction.sourcePlatform}</p><h2 id="annotation-title">{transaction.merchant}</h2><p>{transaction.date.slice(0, 16)} · {money.format(transaction.amount)} · {transaction.direction === 'expense' ? '支出' : '收入'}</p></div><button className="close-button" onClick={onClose} aria-label="关闭">×</button></header><div className="fact-strip"><span>商品<b>{transaction.itemDescription || '—'}</b></span><span>支付原值<b>{transaction.paymentMethod || '—'}</b></span><span>平台分类<b>{transaction.sourceCategory || transaction.transactionType || '—'}</b></span></div>{!annotation ? <DashboardSkeleton /> : <div className="annotation-fields">{visibleDimensions.map((dimension) => <fieldset key={dimension.id}><legend>{dimension.name}<small>{dimension.selectionMode === 'multiple' ? '可多选' : '单选'}</small></legend>{dimension.selectionMode === 'single' ? <select value={dimension.labels.find((label) => selected.includes(label.id))?.id ?? ''} onChange={(event) => choose(dimension, Number(event.target.value))}><option value="">未选择</option>{treeOptions(dimension.labels).filter(({ label }) => label.enabled).map(({ label, depth }) => <option value={label.id} key={label.id}>{'— '.repeat(depth)}{label.name}</option>)}</select> : <div className="checkbox-grid">{treeOptions(dimension.labels).filter(({ label }) => label.enabled).map(({ label, depth }) => <label key={label.id} style={{ paddingLeft: depth * 14 }}><input type="checkbox" checked={selected.includes(label.id)} onChange={(event) => choose(dimension, label.id, event.target.checked)} />{label.name}</label>)}</div>}</fieldset>)}</div>}<div className="suggestion-note"><b>当前默认：</b>{annotation?.assignments.rule.map((item) => item.name).join('、') || '没有规则建议'}。保存后以人工结果为准，刷新规则也不会覆盖。</div><footer className="dialog-actions"><button className="button secondary" disabled={!hasPrevious || saving} onClick={onPrevious}>上一条</button><button className="button ghost" disabled={!hasNext || saving} onClick={onNext}>跳过</button><button className="button secondary" disabled={saving} onClick={() => void save(false)}>保存</button><button className="button primary" disabled={saving} onClick={() => void save(true)}>{saving ? '保存中…' : hasNext ? '保存并下一条' : '保存并完成'}</button></footer></section></div>
+}
+
+function BatchAnnotationDialog({ transactions, catalog, onClose, onSaved, report }: {
+  transactions: Transaction[]; catalog: LabelDimension[]; onClose: () => void; onSaved: (updated: number) => Promise<void>; report: (reason: unknown) => void
+}) {
+  const [selected, setSelected] = useState<number[]>([])
+  const [saving, setSaving] = useState(false)
+  const directions = new Set(transactions.map((item) => item.direction))
+  const mixedDirections = directions.size > 1
+  const visibleDimensions = catalog.filter((dimension) => {
+    if (!dimension.enabled) return false
+    if (dimension.key === 'income_category') return directions.size === 1 && directions.has('income')
+    if (dimension.key === 'expense_category') return directions.size === 1 && directions.has('expense')
+    return true
+  })
+  function choose(dimension: LabelDimension, labelId: number, checked = true) {
+    const dimensionIds = new Set(dimension.labels.map((label) => label.id))
+    if (dimension.selectionMode === 'single') setSelected((current) => [...current.filter((id) => !dimensionIds.has(id)), ...(labelId ? [labelId] : [])])
+    else setSelected((current) => checked ? [...new Set([...current, labelId])] : current.filter((id) => id !== labelId))
+  }
+  async function save() {
+    setSaving(true)
+    try {
+      const result = await saveBatchAnnotations(transactions.map((item) => item.id), selected)
+      await onSaved(result.updated)
+    } catch (reason) { report(reason) } finally { setSaving(false) }
+  }
+  const total = transactions.reduce((sum, item) => sum + Math.abs(item.amount), 0)
+  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><section className="annotation-dialog batch-dialog" role="dialog" aria-modal="true" aria-labelledby="batch-annotation-title"><header><div><p className="eyebrow">BATCH CONFIRMATION</p><h2 id="batch-annotation-title">统一标注 {transactions.length} 笔流水</h2><p>本次选择会完整应用到每一笔，保存后它们将一起离开待标注队列。</p></div><button className="close-button" onClick={onClose} aria-label="关闭">×</button></header><div className="fact-strip"><span>流水数量<b>{transactions.length} 笔</b></span><span>收支范围<b>{mixedDirections ? '收入与支出混合' : directions.has('income') ? '全部收入' : '全部支出'}</b></span><span>合计金额<b>{money.format(total)}</b></span></div>{mixedDirections && <div className="batch-direction-note">混合选择时只显示收入、支出通用维度；如需统一分类，请先按收支方向分开选择。</div>}<div className="annotation-fields">{visibleDimensions.map((dimension) => <fieldset key={dimension.id}><legend>{dimension.name}<small>{dimension.selectionMode === 'multiple' ? '可多选' : '单选'}</small></legend>{dimension.selectionMode === 'single' ? <select value={dimension.labels.find((label) => selected.includes(label.id))?.id ?? ''} onChange={(event) => choose(dimension, Number(event.target.value))}><option value="">未选择</option>{treeOptions(dimension.labels).filter(({ label }) => label.enabled).map(({ label, depth }) => <option value={label.id} key={label.id}>{'— '.repeat(depth)}{label.name}</option>)}</select> : <div className="checkbox-grid">{treeOptions(dimension.labels).filter(({ label }) => label.enabled).map(({ label, depth }) => <label key={label.id} style={{ paddingLeft: depth * 14 }}><input type="checkbox" checked={selected.includes(label.id)} onChange={(event) => choose(dimension, label.id, event.target.checked)} />{label.name}</label>)}</div>}</fieldset>)}</div><div className="suggestion-note"><b>统一结果：</b>{selected.length ? `${selected.length} 个标签会覆盖每笔流水各自的规则建议。` : '尚未选择标签；继续保存会把这些流水确认为“无需标签”。'}</div><footer className="dialog-actions"><button className="button secondary" disabled={saving} onClick={onClose}>返回选择</button><button className="button primary" disabled={saving} onClick={() => void save()}>{saving ? '统一保存中…' : selected.length ? `统一保存并移出 ${transactions.length} 笔` : `确认无标注并移出 ${transactions.length} 笔`}</button></footer></section></div>
 }
 
 function treeOptions(labels: LabelNode[]) {

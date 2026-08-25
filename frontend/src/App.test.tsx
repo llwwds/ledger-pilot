@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 
@@ -28,8 +28,9 @@ describe('App', () => {
     expect(screen.queryByRole('button', { name: 'AI 自动标注' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: '标签管理' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '预填规则' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '流水标注' })).toBeInTheDocument()
     expect((await screen.findAllByText('¥12,000.00')).length).toBeGreaterThan(0)
-    expect(screen.getByText('流水标注')).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: '先搜出一类，再一次标完' })).not.toBeInTheDocument()
     expect(screen.getByText('日收支轨迹')).toBeInTheDocument()
     for (const title of ['支付渠道', '业务类型', '收入分类', '支出分类', '特殊标签']) expect(screen.getByText(title)).toBeInTheDocument()
     expect(screen.getByText('花钱的热力图')).toBeInTheDocument()
@@ -73,4 +74,66 @@ describe('App', () => {
     expect(screen.getByText(/密码只用于本次本地解密，不会保存/)).toBeInTheDocument()
     expect(screen.getByLabelText('解压密码（多份可换行）')).toBeInTheDocument()
   })
+
+  it('在独立标注页搜索、多选并统一移出已标注流水', async () => {
+    let pending = [
+      transaction(11, '星巴克咖啡', '午间咖啡'),
+      transaction(12, '瑞幸咖啡', '早餐咖啡'),
+      transaction(13, '滴滴出行', '通勤'),
+    ]
+    const requests: Array<{ url: string; init?: RequestInit }> = []
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((input: string, init?: RequestInit) => {
+      const url = String(input)
+      requests.push({ url, init })
+      if (url.includes('/api/label-catalog') || url.endsWith('/api/rules')) return response([])
+      if (url.includes('/api/heatmaps')) return response({ year: 2026, expense: [], income: [] })
+      if (url.includes('/api/annotations/batch')) {
+        const body = JSON.parse(String(init?.body)) as { transaction_ids: number[] }
+        pending = pending.filter((item) => !body.transaction_ids.includes(item.id))
+        return response({ updated: body.transaction_ids.length })
+      }
+      if (url.includes('/api/transactions?')) {
+        const search = new URL(url, 'http://local').searchParams.get('query')?.toLocaleLowerCase() ?? ''
+        const items = pending.filter((item) => `${item.merchant} ${item.itemDescription}`.toLocaleLowerCase().includes(search))
+        return response({ items, total: items.length, page: 1, pageSize: 500 })
+      }
+      return response({
+        summary: { income: 0, expense: 90, net: -90 }, trend: [], categories: [], channels: [], distributions: [], recent: [],
+      })
+    }))
+
+    render(<App />)
+    expect(screen.queryByLabelText('待标注流水')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '流水标注' }))
+    expect(await screen.findByRole('heading', { name: '先搜出一类，再一次标完' })).toBeInTheDocument()
+    expect(await screen.findByText('滴滴出行')).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('搜索待标注流水'), { target: { value: '咖啡' } })
+    await waitFor(() => expect(screen.queryByText('滴滴出行')).not.toBeInTheDocument())
+    expect(screen.getByText('星巴克咖啡')).toBeInTheDocument()
+    expect(screen.getByText('瑞幸咖啡')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByLabelText('全选当前搜索结果'))
+    fireEvent.click(screen.getByRole('button', { name: '统一标注 2 笔' }))
+    expect(await screen.findByRole('dialog', { name: '统一标注 2 笔流水' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '确认无标注并移出 2 笔' }))
+
+    expect(await screen.findByText('已统一标注 2 笔流水，并移出待标注队列。')).toBeInTheDocument()
+    expect(screen.queryByText('星巴克咖啡')).not.toBeInTheDocument()
+    expect(screen.queryByText('瑞幸咖啡')).not.toBeInTheDocument()
+    const batchRequest = requests.find((item) => item.url.includes('/api/annotations/batch'))
+    expect(JSON.parse(String(batchRequest?.init?.body))).toEqual({ transaction_ids: [11, 12], label_ids: [] })
+  })
 })
+
+function response(payload: unknown) {
+  return Promise.resolve({ ok: true, json: async () => payload })
+}
+
+function transaction(id: number, merchant: string, itemDescription: string) {
+  return {
+    id, date: '2026-08-25 12:00:00', merchant, itemDescription, amount: 30, direction: 'expense',
+    category: '未分类', categorySource: 'unassigned', channel: '未识别', channelSource: 'unassigned',
+    labelSource: 'unassigned', effectiveLabels: [], sourcePlatform: '微信', transactionId: `tx-${id}`,
+    status: '成功',
+  }
+}

@@ -11,6 +11,7 @@ export interface Transaction {
   sourceCategory?: string; paymentMethod?: string; status: string
 }
 export interface DashboardData { summary: Summary; trend: TrendPoint[]; categories: DistributionItem[]; channels: DistributionItem[]; distributions?: DashboardDistribution[]; recent: Transaction[] }
+export interface TransactionPage { items: Transaction[]; total: number; page: number; pageSize: number }
 export interface HeatmapPoint { date: string; value: number; count: number }
 export interface HeatmapData { year: number; expense: HeatmapPoint[]; income: HeatmapPoint[] }
 export interface ImportResult { imported: number; merged: number; skipped: number }

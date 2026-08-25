@@ -188,6 +188,39 @@ td:nth-child(2) small { margin-top: 3px; color: var(--ink-soft); font-size: 10px
 .amount.expense { color: var(--red); }
 .amount.income { color: #486d59; }
 
+.annotation-page-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 36px; padding: 54px 0 32px; }
+.annotation-page-heading > div:first-child { max-width: 850px; }
+.annotation-page-heading h1 { margin: 0; font: 500 clamp(36px, 4.8vw, 66px)/1.03 Georgia, "Songti SC", serif; letter-spacing: -.05em; }
+.annotation-page-heading p:last-child { max-width: 720px; margin: 15px 0 0; color: var(--ink-soft); font-size: 13px; line-height: 1.7; }
+.queue-count { display: grid; grid-template-columns: auto auto; align-items: baseline; min-width: 150px; padding: 18px 20px; border: 1px solid var(--ink); background: var(--panel); box-shadow: var(--shadow); }
+.queue-count span { grid-column: 1 / -1; color: var(--ink-soft); font: 9px "SFMono-Regular", Consolas, monospace; letter-spacing: .14em; }
+.queue-count strong { font: 500 42px Georgia, serif; font-variant-numeric: tabular-nums; }
+.queue-count small { margin-left: 8px; color: var(--ink-soft); font-size: 10px; }
+.annotation-workspace { min-height: 520px; border: 1px solid var(--ink); background: rgba(245,247,247,.42); box-shadow: var(--shadow); }
+.annotation-toolbar { display: grid; grid-template-columns: minmax(260px, 2fr) minmax(150px, 1fr) minmax(150px, 1fr) auto; align-items: end; gap: 12px; padding: 20px 22px; border-bottom: 1px solid var(--line); }
+.annotation-toolbar label { display: grid; gap: 7px; }
+.annotation-toolbar label > span { color: var(--ink-soft); font-size: 10px; }
+.annotation-toolbar input, .annotation-toolbar select { width: 100%; height: 40px; padding: 0 11px; border: 1px solid var(--line); border-radius: 0; color: var(--ink); background: var(--paper); font-size: 12px; }
+.annotation-toolbar .search-field input { border-color: var(--ink); }
+.clear-filters { min-height: 40px; padding: 0 4px; border: 0; border-bottom: 1px solid var(--ink); background: none; cursor: pointer; font-size: 10px; }
+.selection-dock { position: sticky; z-index: 5; top: 12px; display: flex; align-items: center; justify-content: space-between; gap: 20px; min-height: 76px; margin: 16px 22px; padding: 14px 18px; border: 1px dashed var(--line); background: color-mix(in srgb, var(--paper) 88%, transparent); backdrop-filter: blur(14px); }
+.selection-dock > div:first-child { display: grid; gap: 4px; }
+.selection-dock b { font-family: Georgia, "Songti SC", serif; font-size: 16px; font-weight: 500; }
+.selection-dock span { color: var(--ink-soft); font-size: 10px; }
+.selection-dock > div:last-child { display: flex; gap: 8px; }
+.selection-dock.active { border-style: solid; border-color: var(--ink); box-shadow: 5px 5px 0 rgba(41,59,71,.12); }
+.queue-limit { margin: -4px 22px 15px; color: var(--ink-soft); font-size: 10px; }
+.annotation-table { padding: 0 22px 22px; }
+.annotation-table .select-cell { width: 42px; padding-right: 4px; text-align: center; }
+.annotation-table input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--red); cursor: pointer; }
+.annotation-table tr.selected td { background: color-mix(in srgb, var(--red) 8%, transparent); }
+.annotation-table tbody tr:hover td { background: color-mix(in srgb, var(--ink) 4%, transparent); }
+.annotation-table tbody tr.selected:hover td { background: color-mix(in srgb, var(--red) 12%, transparent); }
+.queue-empty { display: grid; min-height: 330px; place-content: center; justify-items: center; padding: 40px; text-align: center; }
+.queue-empty > span { display: grid; place-items: center; width: 54px; height: 54px; border: 1px solid var(--success); border-radius: 50%; color: var(--success); font-size: 24px; }
+.queue-empty h2 { margin: 18px 0 6px; font: 500 25px Georgia, "Songti SC", serif; }
+.queue-empty p { max-width: 480px; margin: 0; color: var(--ink-soft); font-size: 11px; line-height: 1.7; }
+
 .empty-state { min-height: 138px; display: grid; place-content: center; justify-items: center; color: var(--ink-soft); }
 .empty-state span { font-family: Georgia, serif; font-size: 28px; color: var(--line); }
 .empty-state p { margin: 5px 0; font-size: 11px; }
@@ -245,6 +278,7 @@ footer span { font-family: "SFMono-Regular", Consolas, monospace; letter-spacing
 
 .modal-backdrop { position: fixed; z-index: 20; inset: 0; display: grid; place-items: center; padding: 20px; background: var(--overlay); backdrop-filter: blur(5px); }
 .annotation-dialog { width: min(880px, 100%); max-height: calc(100vh - 40px); overflow: auto; border: 1px solid var(--ink); background: var(--paper); box-shadow: 18px 18px 0 rgba(20,31,37,.22); }
+.batch-dialog { width: min(960px, 100%); }
 .manual-dialog { width: min(760px, 100%); max-height: calc(100vh - 40px); overflow: auto; border: 1px solid var(--ink); background: var(--paper); box-shadow: 18px 18px 0 rgba(20,31,37,.22); }
 .manual-dialog > header { display: flex; justify-content: space-between; padding: 24px 28px; background: var(--blue); color: var(--paper); }
 .manual-dialog header h2 { margin: 0; font: 500 30px Georgia, "Songti SC", serif; }
@@ -279,7 +313,9 @@ footer span { font-family: "SFMono-Regular", Consolas, monospace; letter-spacing
 .checkbox-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 7px; max-height: 130px; overflow: auto; }
 .checkbox-grid label { font-size: 11px; }
 .suggestion-note { margin: 0 28px 20px; padding: 12px 14px; border-left: 3px solid #d29a66; background: #f2e9df; color: var(--ink-soft); font-size: 11px; line-height: 1.6; }
+.batch-direction-note { margin: 18px 28px 0; padding: 10px 12px; border: 1px dashed var(--red); color: var(--ink-soft); font-size: 10px; line-height: 1.6; }
 .dialog-actions { min-height: 74px; justify-content: flex-end; gap: 8px; padding: 14px 28px; border-top: 1px solid var(--line); }
+.annotation-dialog > .dialog-actions { position: sticky; z-index: 3; bottom: 0; background: var(--paper); }
 
 :root[data-theme="glass"] .masthead,
 :root[data-theme="glass"] .month-rail { border-color: var(--line); }
@@ -292,6 +328,8 @@ footer span { font-family: "SFMono-Regular", Consolas, monospace; letter-spacing
 :root[data-theme="glass"] .heatmap-section,
 :root[data-theme="glass"] .heatmap-card,
 :root[data-theme="glass"] .ledger-section,
+:root[data-theme="glass"] .annotation-workspace,
+:root[data-theme="glass"] .queue-count,
 :root[data-theme="glass"] .label-workbench,
 :root[data-theme="glass"] .rule-form,
 :root[data-theme="glass"] .rule-list,
@@ -323,6 +361,8 @@ footer span { font-family: "SFMono-Regular", Consolas, monospace; letter-spacing
 :root[data-theme="glass"] .rule-labels { background: rgba(45, 65, 104, .42); }
 :root[data-theme="glass"] .filters input,
 :root[data-theme="glass"] .filters select,
+:root[data-theme="glass"] .annotation-toolbar input,
+:root[data-theme="glass"] .annotation-toolbar select,
 :root[data-theme="glass"] .dimension-pane input,
 :root[data-theme="glass"] .dimension-pane select,
 :root[data-theme="glass"] .editor-pane input,
@@ -339,6 +379,9 @@ footer span { font-family: "SFMono-Regular", Consolas, monospace; letter-spacing
 :root[data-theme="glass"] td { border-color: rgba(178, 202, 237, .16); }
 :root[data-theme="glass"] .tree-row.active { color: var(--ink); background: rgba(76, 105, 158, .7); }
 :root[data-theme="glass"] .suggestion-note { color: var(--ink-soft); background: rgba(112, 83, 48, .34); border-color: var(--red); }
+:root[data-theme="glass"] .selection-dock { background: rgba(22, 34, 61, .82); }
+:root[data-theme="glass"] .batch-direction-note { background: rgba(112, 83, 48, .18); }
+:root[data-theme="glass"] .annotation-dialog > .dialog-actions { background: rgba(23, 35, 61, .96); backdrop-filter: blur(18px); }
 :root[data-theme="glass"] .status.success { border-color: rgba(142,215,189,.48); background: rgba(48,91,79,.48); }
 :root[data-theme="glass"] .status.error { border-color: rgba(239,142,136,.48); background: rgba(104,50,54,.48); }
 :root[data-theme="glass"] .heatmap-cells i,
@@ -360,6 +403,9 @@ footer span { font-family: "SFMono-Regular", Consolas, monospace; letter-spacing
 
 @media (max-width: 920px) {
   .page-heading { align-items: flex-start; flex-direction: column; }
+  .annotation-page-heading { align-items: flex-start; }
+  .annotation-toolbar { grid-template-columns: 2fr 1fr 1fr; }
+  .clear-filters { grid-column: 1 / -1; justify-self: start; }
   .distribution-grid { grid-template-columns: 1fr; }
   .chart-wrap { height: 330px; }
   .distribution-panel { min-height: 230px; }
@@ -382,6 +428,9 @@ footer span { font-family: "SFMono-Regular", Consolas, monospace; letter-spacing
   .month-track { grid-template-columns: repeat(3, 1fr); }
   .month-tick:first-child, .month-tick:last-child { display: none; }
   .page-heading { padding: 42px 0 28px; gap: 24px; }
+  .annotation-page-heading { align-items: stretch; flex-direction: column; padding: 40px 0 26px; }
+  .annotation-page-heading h1 { font-size: 39px; }
+  .queue-count { align-self: flex-start; }
   .page-heading h1 { font-size: 37px; }
   .page-heading p { line-height: 1.6; }
   .actions { width: 100%; }
@@ -405,6 +454,12 @@ footer span { font-family: "SFMono-Regular", Consolas, monospace; letter-spacing
   .rank-list li { grid-template-columns: 6px 1fr 30px; }
   .rank-list small { display: none; }
   .filters { grid-template-columns: 1fr; }
+  .annotation-toolbar { grid-template-columns: 1fr; padding: 16px; }
+  .clear-filters { grid-column: auto; }
+  .selection-dock { position: sticky; top: 8px; align-items: stretch; flex-direction: column; margin: 12px 16px; }
+  .selection-dock > div:last-child { display: grid; grid-template-columns: 1fr 1.35fr; }
+  .selection-dock .button { padding-inline: 9px; }
+  .annotation-table { padding: 0 16px 16px; }
   footer { align-items: flex-start; flex-direction: column; justify-content: center; gap: 8px; }
   footer p { margin: 0; }
   .label-workbench { display: block; }
