@@ -75,6 +75,40 @@ describe('App', () => {
     expect(screen.getByLabelText('解压密码（多份可换行）')).toBeInTheDocument()
   })
 
+  it('在应用内弹窗新增根标签，不依赖浏览器 prompt', async () => {
+    let catalog = [labelDimension()]
+    const requests: Array<{ url: string; init?: RequestInit }> = []
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((input: string, init?: RequestInit) => {
+      const url = String(input)
+      requests.push({ url, init })
+      if (url.includes('/api/label-catalog')) return response(catalog)
+      if (url.endsWith('/api/labels') && init?.method === 'POST') {
+        const body = JSON.parse(String(init.body))
+        const created = { id: 2, dimensionId: 'expense', parentId: body.parent_id, name: body.name, notes: body.notes, sortOrder: body.sort_order, enabled: true, usageCount: 0 }
+        catalog = [{ ...catalog[0], labels: [...catalog[0].labels, created] }]
+        return response(created)
+      }
+      if (url.endsWith('/api/rules')) return response([])
+      if (url.includes('/api/heatmaps')) return response({ year: 2026, expense: [], income: [] })
+      return response({ summary: { income: 0, expense: 0, net: 0 }, trend: [], categories: [], channels: [], distributions: [], recent: [] })
+    }))
+
+    render(<App />)
+    fireEvent.click(screen.getByRole('button', { name: '标签管理' }))
+    fireEvent.click(await screen.findByRole('button', { name: '＋ 根标签' }))
+    expect(screen.getByRole('dialog', { name: '新增根标签' })).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('标签名称'), { target: { value: '学习成长' } })
+    fireEvent.change(screen.getByLabelText('备注（可选）'), { target: { value: '长期能力投入' } })
+    fireEvent.click(screen.getByRole('button', { name: '创建标签' }))
+
+    expect(await screen.findByText('标签已创建')).toBeInTheDocument()
+    expect(screen.queryByRole('dialog', { name: '新增根标签' })).not.toBeInTheDocument()
+    const createRequest = requests.find((item) => item.url.endsWith('/api/labels') && item.init?.method === 'POST')
+    expect(JSON.parse(String(createRequest?.init?.body))).toEqual({
+      dimension_id: 'expense', parent_id: null, name: '学习成长', notes: '长期能力投入', sort_order: 1,
+    })
+  })
+
   it('在独立标注页搜索、多选并统一移出已标注流水', async () => {
     let pending = [
       transaction(11, '星巴克咖啡', '午间咖啡'),
@@ -135,5 +169,14 @@ function transaction(id: number, merchant: string, itemDescription: string) {
     category: '未分类', categorySource: 'unassigned', channel: '未识别', channelSource: 'unassigned',
     labelSource: 'unassigned', effectiveLabels: [], sourcePlatform: '微信', transactionId: `tx-${id}`,
     status: '成功',
+  }
+}
+
+function labelDimension() {
+  return {
+    id: 'expense', key: 'expense_category', name: '支出分类', notes: '支出去向', selectionMode: 'single' as const,
+    sortOrder: 0, enabled: true, labels: [
+      { id: 1, dimensionId: 'expense', parentId: null, name: '餐饮', notes: '', sortOrder: 0, enabled: true, usageCount: 0 },
+    ],
   }
 }

@@ -280,6 +280,17 @@ footer span { font-family: "SFMono-Regular", Consolas, monospace; letter-spacing
 .annotation-dialog { width: min(880px, 100%); max-height: calc(100vh - 40px); overflow: auto; border: 1px solid var(--ink); background: var(--paper); box-shadow: 18px 18px 0 rgba(20,31,37,.22); }
 .batch-dialog { width: min(960px, 100%); }
 .manual-dialog { width: min(760px, 100%); max-height: calc(100vh - 40px); overflow: auto; border: 1px solid var(--ink); background: var(--paper); box-shadow: 18px 18px 0 rgba(20,31,37,.22); }
+.label-dialog { width: min(560px, 100%); max-height: calc(100vh - 40px); overflow: auto; border: 1px solid var(--ink); background: var(--paper); box-shadow: 18px 18px 0 rgba(20,31,37,.22); }
+.label-dialog > header { display: flex; justify-content: space-between; padding: 24px 28px; background: var(--blue); color: var(--paper); }
+.label-dialog header h2 { margin: 0; font: 500 28px Georgia, "Songti SC", serif; }
+.label-dialog header p:last-child { margin: 8px 0 0; color: #c8d1d4; font-size: 11px; }
+.label-dialog .eyebrow { color: #e9a08d !important; }
+.label-dialog-body { display: grid; gap: 16px; padding: 26px 28px; }
+.label-dialog-body label { display: grid; gap: 7px; color: var(--ink-soft); font-size: 10px; }
+.label-dialog-body input, .label-dialog-body textarea { width: 100%; min-height: 40px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 0; background: var(--paper); }
+.label-dialog-body textarea { min-height: 86px; resize: vertical; }
+.label-dialog-body > p { margin: 0; color: var(--ink-soft); font-size: 12px; line-height: 1.7; }
+.label-dialog-body .dialog-inline-error { padding: 10px 12px; border: 1px solid #d2a19d; color: var(--red); background: rgba(248,233,231,.72); }
 .manual-dialog > header { display: flex; justify-content: space-between; padding: 24px 28px; background: var(--blue); color: var(--paper); }
 .manual-dialog header h2 { margin: 0; font: 500 30px Georgia, "Songti SC", serif; }
 .manual-dialog header p:last-child { margin: 8px 0 0; color: #c8d1d4; font-size: 11px; }
@@ -334,6 +345,7 @@ footer span { font-family: "SFMono-Regular", Consolas, monospace; letter-spacing
 :root[data-theme="glass"] .rule-form,
 :root[data-theme="glass"] .rule-list,
 :root[data-theme="glass"] .annotation-dialog,
+:root[data-theme="glass"] .label-dialog,
 :root[data-theme="glass"] .manual-dialog,
 :root[data-theme="glass"] .password-dialog {
   background: var(--panel);
@@ -344,11 +356,13 @@ footer span { font-family: "SFMono-Regular", Consolas, monospace; letter-spacing
 }
 :root[data-theme="glass"] .summary-strip .hero-amount,
 :root[data-theme="glass"] .manual-dialog > header,
+:root[data-theme="glass"] .label-dialog > header,
 :root[data-theme="glass"] .password-dialog > header,
 :root[data-theme="glass"] .annotation-dialog > header { color: var(--ink); background: linear-gradient(135deg, rgba(53, 77, 123, .96), rgba(35, 47, 82, .92)); }
 :root[data-theme="glass"] .summary-strip .hero-amount p,
 :root[data-theme="glass"] .summary-strip .hero-amount span,
 :root[data-theme="glass"] .manual-dialog header p:last-child,
+:root[data-theme="glass"] .label-dialog header p:last-child,
 :root[data-theme="glass"] .annotation-dialog header p:last-child { color: var(--ink-soft); }
 :root[data-theme="glass"] .month-tick.active { color: #172038; }
 :root[data-theme="glass"] .month-tick.active::before { box-shadow: 0 0 30px rgba(240,201,122,.22); }
@@ -374,6 +388,8 @@ footer span { font-family: "SFMono-Regular", Consolas, monospace; letter-spacing
 :root[data-theme="glass"] .manual-fields input,
 :root[data-theme="glass"] .manual-fields select,
 :root[data-theme="glass"] .manual-fields textarea,
+:root[data-theme="glass"] .label-dialog-body input,
+:root[data-theme="glass"] .label-dialog-body textarea,
 :root[data-theme="glass"] .password-body textarea,
 :root[data-theme="glass"] .annotation-fields select { color: var(--ink); background: var(--input); border-color: var(--line); color-scheme: dark; }
 :root[data-theme="glass"] td { border-color: rgba(178, 202, 237, .16); }
@@ -384,6 +400,7 @@ footer span { font-family: "SFMono-Regular", Consolas, monospace; letter-spacing
 :root[data-theme="glass"] .annotation-dialog > .dialog-actions { background: rgba(23, 35, 61, .96); backdrop-filter: blur(18px); }
 :root[data-theme="glass"] .status.success { border-color: rgba(142,215,189,.48); background: rgba(48,91,79,.48); }
 :root[data-theme="glass"] .status.error { border-color: rgba(239,142,136,.48); background: rgba(104,50,54,.48); }
+:root[data-theme="glass"] .dialog-inline-error { border-color: rgba(239,142,136,.48); background: rgba(104,50,54,.48); }
 :root[data-theme="glass"] .heatmap-cells i,
 :root[data-theme="glass"] .heatmap-card > footer i { border-color: rgba(190,211,242,.11); background: rgba(190,211,242,.075); }
 :root[data-theme="glass"] .heatmap-card.expense .level-1 { background: #5a4d48; }

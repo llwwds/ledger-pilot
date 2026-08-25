@@ -183,7 +183,7 @@ function App() {
       onSubmit={(password) => { const files = pendingArchives; setPendingArchives([]); void handleImport(files, password) }}
     />}
     {manualEntryOpen && <ManualEntryDialog catalog={catalog} onClose={() => setManualEntryOpen(false)} onSaved={handleManualSaved} report={report} />}
-    <footer><span>LEDGER PILOT / V1.4.0</span><p>规则给建议，最终选择由你确认；原始流水永不被标注修改。</p></footer>
+    <footer><span>LEDGER PILOT / V1.4.1</span><p>规则给建议，最终选择由你确认；原始流水永不被标注修改。</p></footer>
   </main>
 }
 
@@ -356,22 +356,144 @@ function panelIndex(index: number) {
   return result
 }
 
+type LabelCreateTarget = {
+  parentId: number | null
+  relationship: 'root' | 'child' | 'sibling'
+  referenceName?: string
+}
+
+type LabelDeleteTarget =
+  | { kind: 'dimension'; id: string; name: string }
+  | { kind: 'label'; id: number; name: string }
+
 function LabelManager({ catalog, reload, report, announce }: { catalog: LabelDimension[]; reload: () => Promise<void>; report: (reason: unknown) => void; announce: (value: string) => void }) {
   const [dimensionId, setDimensionId] = useState('')
   const [labelId, setLabelId] = useState<number | null>(null)
   const [newDimension, setNewDimension] = useState({ key: '', name: '', notes: '', selection_mode: 'single' })
+  const [createTarget, setCreateTarget] = useState<LabelCreateTarget | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<LabelDeleteTarget | null>(null)
+  const [mutationError, setMutationError] = useState('')
   const dimension = catalog.find((item) => item.id === dimensionId) ?? catalog[0]
   const selected = dimension?.labels.find((label) => label.id === labelId) ?? null
   useEffect(() => { if (!dimensionId && catalog[0]) setDimensionId(catalog[0].id) }, [catalog, dimensionId])
-  async function run(action: () => Promise<unknown>, message: string) { try { await action(); await reload(); announce(message) } catch (reason) { report(reason) } }
-  async function addLabel(parentId: number | null) { const name = window.prompt(parentId ? '新标签名称' : '新根标签名称'); if (!name || !dimension) return; await run(() => createLabel({ dimension_id: dimension.id, parent_id: parentId, name, sort_order: dimension.labels.length }), '标签已创建') }
-  return <section className="workspace-page"><div className="workspace-heading"><p className="eyebrow">LABEL ARCHITECTURE</p><h1>把分类体系搭成一棵可维护的树</h1><p>每个层级都能增删、备注、排序和停用。被流水引用的标签删除时只会停用。</p></div><div className="label-workbench"><aside className="dimension-pane"><h2>维度</h2>{catalog.map((item) => <button key={item.id} className={item.id === dimension?.id ? 'active' : ''} onClick={() => { setDimensionId(item.id); setLabelId(null) }}><span>{item.name}</span><small>{item.labels.length} 个标签</small></button>)}<form onSubmit={(event) => { event.preventDefault(); void run(() => createDimension(newDimension), '维度已创建'); setNewDimension({ key: '', name: '', notes: '', selection_mode: 'single' }) }}><h3>新增维度</h3><input required placeholder="机器标识，如 project" value={newDimension.key} onChange={(e) => setNewDimension({ ...newDimension, key: e.target.value })} /><input required placeholder="显示名称" value={newDimension.name} onChange={(e) => setNewDimension({ ...newDimension, name: e.target.value })} /><select value={newDimension.selection_mode} onChange={(e) => setNewDimension({ ...newDimension, selection_mode: e.target.value })}><option value="single">单选</option><option value="multiple">多选</option></select><button className="button secondary">创建维度</button></form></aside><section className="tree-pane"><div className="pane-heading"><div><h2>{dimension?.name ?? '标签树'}</h2><p>{dimension?.notes || '从根标签开始建立层级'}</p></div><button className="button secondary" onClick={() => void addLabel(null)}>＋ 根标签</button></div>{dimension && treeOptions(dimension.labels).map(({ label, depth }) => <button key={label.id} className={`tree-row ${label.id === selected?.id ? 'active' : ''} ${label.enabled ? '' : 'disabled'}`} style={{ paddingLeft: 18 + depth * 24 }} onClick={() => setLabelId(label.id)}><span>{depth ? '↳' : '◆'} {label.name}</span><small>{label.usageCount} 次引用</small></button>)}</section><section className="editor-pane">{selected && dimension ? <LabelEditor label={selected} dimension={dimension} run={run} addLabel={addLabel} onDeleted={() => setLabelId(null)} /> : dimension ? <><p className="eyebrow">DIMENSION</p><h2>{dimension.name}</h2><label>说明<textarea defaultValue={dimension.notes ?? ''} onBlur={(event) => void run(() => updateDimension(dimension.id, { notes: event.target.value }), '维度说明已保存')} /></label><label className="toggle"><input type="checkbox" checked={dimension.enabled} onChange={(event) => void run(() => updateDimension(dimension.id, { enabled: event.target.checked }), '维度状态已更新')} />启用此维度</label><button className="danger-link" onClick={() => { if (window.confirm('删除此维度？存在流水引用时将改为停用。')) void run(() => deleteDimension(dimension.id), '维度已安全处理') }}>删除维度</button></> : <EmptyState text="先创建一个标签维度" />}</section></div></section>
+  async function run(action: () => Promise<unknown>, message: string) {
+    try {
+      setMutationError('')
+      const result = await action()
+      await reload()
+      announce(message)
+      return result
+    } catch (reason) {
+      setMutationError(reason instanceof Error ? reason.message : '操作未完成')
+      report(reason)
+      return undefined
+    }
+  }
+  async function createRequestedLabel(name: string, notes: string) {
+    if (!dimension || !createTarget) return false
+    const created = await run(() => createLabel({
+      dimension_id: dimension.id,
+      parent_id: createTarget.parentId,
+      name,
+      notes: notes || undefined,
+      sort_order: dimension.labels.filter((label) => label.parentId === createTarget.parentId).length,
+    }), '标签已创建') as LabelNode | undefined
+    if (!created) return false
+    setLabelId(created.id)
+    setCreateTarget(null)
+    return true
+  }
+  async function deleteRequestedItem() {
+    if (!deleteTarget) return false
+    const result = deleteTarget.kind === 'dimension'
+      ? await run(() => deleteDimension(deleteTarget.id), '维度已安全处理')
+      : await run(() => deleteLabel(deleteTarget.id), '标签已安全处理')
+    if (!result) return false
+    if (deleteTarget.kind === 'label') setLabelId(null)
+    setDeleteTarget(null)
+    return true
+  }
+  return <>
+    <section className="workspace-page">
+      <div className="workspace-heading"><p className="eyebrow">LABEL ARCHITECTURE</p><h1>把分类体系搭成一棵可维护的树</h1><p>每个层级都能增删、备注、排序和停用。被流水引用的标签删除时只会停用。</p></div>
+      <div className="label-workbench">
+        <aside className="dimension-pane">
+          <h2>维度</h2>
+          {catalog.map((item) => <button type="button" key={item.id} className={item.id === dimension?.id ? 'active' : ''} onClick={() => { setDimensionId(item.id); setLabelId(null) }}><span>{item.name}</span><small>{item.labels.length} 个标签</small></button>)}
+          <form onSubmit={(event) => { event.preventDefault(); void run(() => createDimension(newDimension), '维度已创建'); setNewDimension({ key: '', name: '', notes: '', selection_mode: 'single' }) }}><h3>新增维度</h3><input required placeholder="机器标识，如 project" value={newDimension.key} onChange={(e) => setNewDimension({ ...newDimension, key: e.target.value })} /><input required placeholder="显示名称" value={newDimension.name} onChange={(e) => setNewDimension({ ...newDimension, name: e.target.value })} /><select value={newDimension.selection_mode} onChange={(e) => setNewDimension({ ...newDimension, selection_mode: e.target.value })}><option value="single">单选</option><option value="multiple">多选</option></select><button className="button secondary">创建维度</button></form>
+        </aside>
+        <section className="tree-pane">
+          <div className="pane-heading"><div><h2>{dimension?.name ?? '标签树'}</h2><p>{dimension?.notes || '从根标签开始建立层级'}</p></div><button type="button" className="button secondary" onClick={() => { setMutationError(''); setCreateTarget({ parentId: null, relationship: 'root' }) }}>＋ 根标签</button></div>
+          {dimension && treeOptions(dimension.labels).map(({ label, depth }) => <button type="button" key={label.id} className={`tree-row ${label.id === selected?.id ? 'active' : ''} ${label.enabled ? '' : 'disabled'}`} style={{ paddingLeft: 18 + depth * 24 }} onClick={() => setLabelId(label.id)}><span>{depth ? '↳' : '◆'} {label.name}</span><small>{label.usageCount} 次引用</small></button>)}
+        </section>
+        <section className="editor-pane">
+          {selected && dimension ? <LabelEditor
+            label={selected} dimension={dimension} run={run}
+            requestLabel={(target) => { setMutationError(''); setCreateTarget(target) }}
+            requestDelete={() => { setMutationError(''); setDeleteTarget({ kind: 'label', id: selected.id, name: selected.name }) }}
+          /> : dimension ? <><p className="eyebrow">DIMENSION</p><h2>{dimension.name}</h2><label>说明<textarea defaultValue={dimension.notes ?? ''} onBlur={(event) => void run(() => updateDimension(dimension.id, { notes: event.target.value }), '维度说明已保存')} /></label><label className="toggle"><input type="checkbox" checked={dimension.enabled} onChange={(event) => void run(() => updateDimension(dimension.id, { enabled: event.target.checked }), '维度状态已更新')} />启用此维度</label><button type="button" className="danger-link" onClick={() => { setMutationError(''); setDeleteTarget({ kind: 'dimension', id: dimension.id, name: dimension.name }) }}>删除维度</button></> : <EmptyState text="先创建一个标签维度" />}
+        </section>
+      </div>
+    </section>
+    {createTarget && dimension && <LabelCreateDialog dimension={dimension} target={createTarget} error={mutationError} onClose={() => setCreateTarget(null)} onCreate={createRequestedLabel} />}
+    {deleteTarget && <LabelDeleteDialog target={deleteTarget} error={mutationError} onClose={() => setDeleteTarget(null)} onConfirm={deleteRequestedItem} />}
+  </>
 }
 
-function LabelEditor({ label, dimension, run, addLabel, onDeleted }: { label: LabelNode; dimension: LabelDimension; run: (action: () => Promise<unknown>, message: string) => Promise<void>; addLabel: (parentId: number | null) => Promise<void>; onDeleted: () => void }) {
+function LabelEditor({ label, dimension, run, requestLabel, requestDelete }: {
+  label: LabelNode
+  dimension: LabelDimension
+  run: (action: () => Promise<unknown>, message: string) => Promise<unknown>
+  requestLabel: (target: LabelCreateTarget) => void
+  requestDelete: () => void
+}) {
   const [draft, setDraft] = useState(label)
   useEffect(() => setDraft(label), [label])
-  return <><p className="eyebrow">LABEL / {label.id}</p><h2>{label.name}</h2><label>名称<input value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} /></label><label>备注<textarea value={draft.notes ?? ''} onChange={(e) => setDraft({ ...draft, notes: e.target.value })} /></label><label>父标签<select value={draft.parentId ?? ''} onChange={(e) => setDraft({ ...draft, parentId: e.target.value ? Number(e.target.value) : null })}><option value="">根级</option>{treeOptions(dimension.labels).filter(({ label: item }) => item.id !== label.id).map(({ label: item, depth }) => <option key={item.id} value={item.id}>{'— '.repeat(depth)}{item.name}</option>)}</select></label><label>排序<input type="number" value={draft.sortOrder} onChange={(e) => setDraft({ ...draft, sortOrder: Number(e.target.value) })} /></label><label className="toggle"><input type="checkbox" checked={draft.enabled} onChange={(e) => setDraft({ ...draft, enabled: e.target.checked })} />启用标签</label><div className="editor-actions"><button className="button primary" onClick={() => void run(() => updateLabel(label.id, { name: draft.name, notes: draft.notes, parent_id: draft.parentId, sort_order: draft.sortOrder, enabled: draft.enabled }), '标签已保存')}>保存修改</button><button className="button secondary" onClick={() => void addLabel(label.id)}>新增子级</button><button className="button secondary" onClick={() => void addLabel(label.parentId)}>新增同级</button></div><button className="danger-link" onClick={() => { if (window.confirm('删除此标签？有子级或流水引用时将改为停用。')) void run(() => deleteLabel(label.id), '标签已安全处理').then(onDeleted) }}>删除标签</button></>
+  return <><p className="eyebrow">LABEL / {label.id}</p><h2>{label.name}</h2><label>名称<input value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} /></label><label>备注<textarea value={draft.notes ?? ''} onChange={(e) => setDraft({ ...draft, notes: e.target.value })} /></label><label>父标签<select value={draft.parentId ?? ''} onChange={(e) => setDraft({ ...draft, parentId: e.target.value ? Number(e.target.value) : null })}><option value="">根级</option>{treeOptions(dimension.labels).filter(({ label: item }) => item.id !== label.id).map(({ label: item, depth }) => <option key={item.id} value={item.id}>{'— '.repeat(depth)}{item.name}</option>)}</select></label><label>排序<input type="number" value={draft.sortOrder} onChange={(e) => setDraft({ ...draft, sortOrder: Number(e.target.value) })} /></label><label className="toggle"><input type="checkbox" checked={draft.enabled} onChange={(e) => setDraft({ ...draft, enabled: e.target.checked })} />启用标签</label><div className="editor-actions"><button type="button" className="button primary" onClick={() => void run(() => updateLabel(label.id, { name: draft.name, notes: draft.notes, parent_id: draft.parentId, sort_order: draft.sortOrder, enabled: draft.enabled }), '标签已保存')}>保存修改</button><button type="button" className="button secondary" onClick={() => requestLabel({ parentId: label.id, relationship: 'child', referenceName: label.name })}>新增子级</button><button type="button" className="button secondary" onClick={() => requestLabel({ parentId: label.parentId, relationship: 'sibling', referenceName: label.name })}>新增同级</button></div><button type="button" className="danger-link" onClick={requestDelete}>删除标签</button></>
+}
+
+function LabelCreateDialog({ dimension, target, error, onClose, onCreate }: {
+  dimension: LabelDimension
+  target: LabelCreateTarget
+  error: string
+  onClose: () => void
+  onCreate: (name: string, notes: string) => Promise<boolean>
+}) {
+  const [name, setName] = useState('')
+  const [notes, setNotes] = useState('')
+  const [saving, setSaving] = useState(false)
+  const title = target.relationship === 'root' ? '新增根标签' : target.relationship === 'child' ? `新增“${target.referenceName}”的子级` : `新增“${target.referenceName}”的同级`
+  async function submit() {
+    setSaving(true)
+    try { await onCreate(name.trim(), notes.trim()) } finally { setSaving(false) }
+  }
+  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) onClose() }}>
+    <form className="label-dialog" role="dialog" aria-modal="true" aria-labelledby="label-create-title" onSubmit={(event) => { event.preventDefault(); void submit() }}>
+      <header><div><p className="eyebrow">{dimension.name} / NEW LABEL</p><h2 id="label-create-title">{title}</h2><p>{target.parentId === null ? '创建在当前维度的根级。' : '父级关系会随标签一起保存。'}</p></div><button type="button" className="close-button" disabled={saving} onClick={onClose} aria-label="关闭">×</button></header>
+      <div className="label-dialog-body">{error && <p className="dialog-inline-error" role="alert">{error}</p>}<label>标签名称<input autoFocus required value={name} onChange={(event) => setName(event.target.value)} /></label><label>备注（可选）<textarea value={notes} onChange={(event) => setNotes(event.target.value)} /></label></div>
+      <footer className="dialog-actions"><button type="button" className="button secondary" disabled={saving} onClick={onClose}>取消</button><button className="button primary" disabled={saving}>{saving ? '创建中…' : '创建标签'}</button></footer>
+    </form>
+  </div>
+}
+
+function LabelDeleteDialog({ target, error, onClose, onConfirm }: {
+  target: LabelDeleteTarget
+  error: string
+  onClose: () => void
+  onConfirm: () => Promise<boolean>
+}) {
+  const [saving, setSaving] = useState(false)
+  async function confirm() {
+    setSaving(true)
+    try { await onConfirm() } finally { setSaving(false) }
+  }
+  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) onClose() }}>
+    <section className="label-dialog confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="label-delete-title">
+      <header><div><p className="eyebrow">SAFE DELETE</p><h2 id="label-delete-title">安全处理“{target.name}”</h2><p>{target.kind === 'dimension' ? '将处理整个维度及其标签。' : '将处理当前标签。'}</p></div><button type="button" className="close-button" disabled={saving} onClick={onClose} aria-label="关闭">×</button></header>
+      <div className="label-dialog-body">{error && <p className="dialog-inline-error" role="alert">{error}</p>}<p>没有引用时会直接删除；存在流水、规则引用或子标签时只会停用，历史数据不会丢失。</p></div>
+      <footer className="dialog-actions"><button type="button" className="button secondary" disabled={saving} onClick={onClose}>取消</button><button type="button" className="button primary" disabled={saving} onClick={() => void confirm()}>{saving ? '处理中…' : '确认安全处理'}</button></footer>
+    </section>
+  </div>
 }
 
 function RulesManager({ catalog, rules, reload, report, announce }: { catalog: LabelDimension[]; rules: MerchantRule[]; reload: () => Promise<void>; report: (reason: unknown) => void; announce: (value: string) => void }) {
