@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -39,6 +40,12 @@ def _manual_transaction(
         "reference_id": reference_id,
     })
     assert response.status_code == 201, response.text
+
+
+def _search(client: TestClient, **body: object) -> dict:
+    response = client.post("/api/transactions/search", json=body)
+    assert response.status_code == 200, response.text
+    return response.json()
 
 
 def test_import_preserves_each_batch_and_merges_idempotently(client: TestClient) -> None:
@@ -429,3 +436,200 @@ def test_dashboard_rejects_conflicting_or_invalid_ranges_and_granularity(client:
     for params in invalid_params:
         response = client.get("/api/dashboard", params=params)
         assert response.status_code == 422, (params, response.text)
+
+
+NORMALIZED_SEARCH_FIELDS = {
+    "source_platform", "transaction_time", "direction", "amount", "counterparty",
+    "item_description", "payment_method", "payment_channel", "transaction_status",
+    "status_category", "transaction_id", "merchant_order_id", "transaction_type",
+    "source_category", "counterparty_account", "note",
+}
+
+
+def _prepare_search_records(client: TestClient) -> None:
+    _import_wechat(client)
+    response = client.post(
+        "/api/import",
+        files={"files": ("alipay.csv", make_alipay_csv(), "text/csv")},
+    )
+    assert response.status_code == 200, response.text
+    response = client.post("/api/transactions/manual", json={
+        "transaction_time": "2026-08-10T10:04:11",
+        "direction": "收入",
+        "amount": "5252.20",
+        "counterparty": "示例公司",
+        "summary": "工资",
+        "category": "工资",
+        "payment_channel": "银行卡",
+        "payment_method": "招商银行",
+        "counterparty_account": "manual-account",
+        "reference_id": "manual-search-1",
+        "note": "例外补录",
+    })
+    assert response.status_code == 201, response.text
+
+
+def test_transaction_search_registers_all_normalized_fields_and_returns_raw_fields(
+    client: TestClient,
+) -> None:
+    field_schema = client.app.openapi()["components"]["schemas"]["TransactionSearchFilter"]["properties"]["field"]
+    assert set(field_schema["enum"]) == NORMALIZED_SEARCH_FIELDS
+    _import_wechat(client)
+
+    result = _search(client, filters=[{
+        "field": "transaction_id", "mode": "include", "operator": "equals", "value": "wx-1",
+    }])
+
+    assert result["total"] == 1
+    item = result["items"][0]
+    assert item["transactionStatus"] == "支付成功"
+    assert item["statusCategory"] == "成功"
+    assert item["merchantOrderId"] == "m-1"
+    assert item["counterpartyAccount"] is None
+    assert item["cleanedPaymentChannel"] == "微信零钱"
+    assert item["status"] == item["statusCategory"]
+
+
+@pytest.mark.parametrize(("field", "operator", "payload", "transaction_id"), [
+    ("source_platform", "equals", {"value": "支付宝"}, "ali-1"),
+    ("transaction_time", "range", {"min": "2026-07-31T23:24:39", "max": "2026-07-31T23:24:39"}, "wx-1"),
+    ("direction", "equals", {"value": "支出"}, "wx-1"),
+    ("amount", "range", {"min": "4.00", "max": "4.00"}, "wx-1"),
+    ("counterparty", "equals", {"value": "美团"}, "wx-1"),
+    ("item_description", "contains", {"value": "午餐"}, "wx-1"),
+    ("payment_method", "contains", {"value": "零钱"}, "wx-1"),
+    ("payment_channel", "equals", {"value": "微信零钱"}, "wx-1"),
+    ("transaction_status", "equals", {"value": "支付成功"}, "wx-1"),
+    ("status_category", "equals", {"value": "退款"}, "wx-2"),
+    ("transaction_id", "equals", {"value": "wx-1"}, "wx-1"),
+    ("merchant_order_id", "equals", {"value": "m-1"}, "wx-1"),
+    ("transaction_type", "contains", {"value": "商户"}, "wx-1"),
+    ("source_category", "equals", {"value": "交通出行"}, "ali-1"),
+    ("counterparty_account", "equals", {"value": "***"}, "ali-1"),
+    ("note", "equals", {"value": "例外补录"}, "manual-search-1"),
+])
+def test_transaction_search_filters_representative_values_for_every_normalized_field(
+    client: TestClient,
+    field: str,
+    operator: str,
+    payload: dict[str, str],
+    transaction_id: str,
+) -> None:
+    _prepare_search_records(client)
+
+    result = _search(client, filters=[{
+        "field": field, "mode": "include", "operator": operator, **payload,
+    }])
+
+    assert transaction_id in {item["transactionId"] for item in result["items"]}
+
+
+def test_transaction_search_combines_same_field_or_cross_field_and_and_exclusion(
+    client: TestClient,
+) -> None:
+    _prepare_search_records(client)
+    filters = [
+        {"field": "counterparty", "mode": "include", "operator": "equals", "value": "美团"},
+        {"field": "counterparty", "mode": "include", "operator": "equals", "value": "滴滴出行"},
+        {"field": "direction", "mode": "include", "operator": "equals", "value": "支出"},
+    ]
+    included = _search(client, filters=filters)
+    assert {item["transactionId"] for item in included["items"]} == {"wx-1", "ali-1"}
+
+    excluded = _search(client, filters=[
+        *filters,
+        {"field": "source_platform", "mode": "exclude", "operator": "equals", "value": "支付宝"},
+    ])
+    assert [item["transactionId"] for item in excluded["items"]] == ["wx-1"]
+
+
+def test_transaction_search_keeps_global_query_and_inclusive_ranges_orthogonal(
+    client: TestClient,
+) -> None:
+    _prepare_search_records(client)
+    filters = [
+        {"field": "transaction_time", "mode": "include", "operator": "range",
+         "min": "2026-07-31T23:24:39", "max": "2026-07-31T23:24:39"},
+        {"field": "amount", "mode": "include", "operator": "range", "min": "4.00", "max": "4.00"},
+    ]
+
+    included = _search(client, query={"text": "美团", "mode": "include"}, filters=filters)
+    assert [item["transactionId"] for item in included["items"]] == ["wx-1"]
+    excluded = _search(client, query={"text": "午餐", "mode": "exclude"}, filters=filters)
+    assert excluded["total"] == 0
+
+
+def test_transaction_search_date_only_max_includes_the_entire_day(client: TestClient) -> None:
+    _manual_transaction(client, "2026-08-10T23:59:59", "支出", "8.00", "date-range-late")
+    _manual_transaction(client, "2026-08-11T00:00:00", "支出", "9.00", "date-range-next-day")
+
+    whole_day = _search(client, filters=[{
+        "field": "transaction_time", "mode": "include", "operator": "range",
+        "min": "2026-08-10", "max": "2026-08-10",
+    }])
+    assert [item["transactionId"] for item in whole_day["items"]] == ["date-range-late"]
+
+    precise_max = _search(client, filters=[{
+        "field": "transaction_time", "mode": "include", "operator": "range",
+        "min": "2026-08-10T00:00:00", "max": "2026-08-10T23:59:58",
+    }])
+    assert precise_max["total"] == 0
+
+
+def test_transaction_search_supports_empty_filters_category_channel_status_and_pagination(
+    client: TestClient,
+) -> None:
+    _prepare_search_records(client)
+    empty_source_category = _search(client, filters=[{
+        "field": "source_category", "mode": "include", "operator": "is_empty",
+    }])
+    assert {item["transactionId"] for item in empty_source_category["items"]} >= {"wx-1", "wx-2"}
+    assert "ali-1" not in {item["transactionId"] for item in empty_source_category["items"]}
+    assert _search(client, filters=[{
+        "field": "amount", "mode": "include", "operator": "is_empty",
+    }])["total"] == 0
+    filtered = _search(
+        client, month="2026-07", category="未分类", channel="微信零钱",
+        annotation_status="pending", page=1, page_size=1,
+    )
+    assert filtered["total"] == 1
+    assert filtered["page"] == 1 and filtered["pageSize"] == 1
+    assert filtered["items"][0]["transactionId"] == "wx-1"
+
+
+@pytest.mark.parametrize("body", [
+    {"unexpected": True},
+    {"query": {"text": "x", "mode": "include", "unexpected": True}},
+    {"query": {"text": "x" * 201, "mode": "include"}},
+    {"page": 0},
+    {"page_size": 501},
+    {"filters": [{"field": "unknown", "mode": "include", "operator": "equals", "value": "x"}]},
+    {"filters": [{"field": "amount", "mode": "include", "operator": "contains", "value": "1"}]},
+    {"filters": [{"field": "counterparty", "mode": "include", "operator": "range", "min": "a"}]},
+    {"filters": [{"field": "counterparty", "mode": "include", "operator": "equals"}]},
+    {"filters": [{"field": "counterparty", "mode": "include", "operator": "is_empty", "value": "x"}]},
+    {"filters": [{"field": "amount", "mode": "include", "operator": "range"}]},
+    {"filters": [{"field": "amount", "mode": "include", "operator": "range", "min": "nan"}]},
+    {"filters": [{"field": "amount", "mode": "include", "operator": "range", "min": "not-a-number"}]},
+    {"filters": [{"field": "amount", "mode": "include", "operator": "range", "min": "2", "max": "1"}]},
+    {"filters": [{"field": "transaction_time", "mode": "include", "operator": "range", "min": "not-a-date"}]},
+    {"filters": [{"field": "transaction_time", "mode": "include", "operator": "range",
+                  "min": "2026-08-11T00:00:00", "max": "2026-08-10"}]},
+    {"filters": [{"field": "transaction_time", "mode": "include", "operator": "range",
+                  "max": "9999-12-31"}]},
+    {"filters": [
+        {"field": "note", "mode": "include", "operator": "is_empty"} for _ in range(33)
+    ]},
+])
+def test_transaction_search_rejects_invalid_requests(client: TestClient, body: dict) -> None:
+    response = client.post("/api/transactions/search", json=body)
+    assert response.status_code == 422, response.text
+
+
+def test_legacy_transaction_get_semantics_remain_available(client: TestClient) -> None:
+    _import_wechat(client)
+    response = client.get("/api/transactions", params={
+        "month": "2026-07", "source_platform": "微信", "direction": "expense", "query": "美团",
+    })
+    assert response.status_code == 200, response.text
+    assert [item["transactionId"] for item in response.json()["items"]] == ["wx-1"]

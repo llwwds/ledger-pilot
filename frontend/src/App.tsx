@@ -2,10 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Area, AreaChart, CartesianGrid, Cell, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import {
   createDimension, createLabel, createManualTransaction, createRule, deleteDimension, deleteLabel, deleteRule,
-  getAnnotation, getDashboard, getHeatmaps, getLabelCatalog, getRules, getTransactions, importStatements,
+  getAnnotation, getDashboard, getHeatmaps, getLabelCatalog, getRules, importStatements, searchTransactions,
   saveAnnotation, saveBatchAnnotations, updateDimension, updateLabel, updateRule,
 } from './api'
-import type { AnnotationData, DashboardData, DashboardGranularity, DashboardRange, DistributionItem, HeatmapData, HeatmapPoint, LabelDimension, LabelNode, ManualTransactionInput, MerchantRule, Transaction } from './types'
+import type { AnnotationData, DashboardData, DashboardGranularity, DashboardRange, DistributionItem, FilterMode, HeatmapData, HeatmapPoint, LabelDimension, LabelNode, ManualTransactionInput, MerchantRule, Transaction, TransactionFilter } from './types'
+import { defaultOperator, emptyFilter, filterDescription, filterField, NORMALIZED_FILTER_FIELDS, serializeFilter } from './transactionFilters'
 
 const money = new Intl.NumberFormat('zh-CN', { style: 'currency', currency: 'CNY' })
 const compactMoney = new Intl.NumberFormat('zh-CN', { notation: 'compact', maximumFractionDigits: 1 })
@@ -45,6 +46,7 @@ function App() {
   const [transactions, setTransactions] = useState<Transaction[]>([])
   const [transactionTotal, setTransactionTotal] = useState(0)
   const [annotationLoading, setAnnotationLoading] = useState(false)
+  const [annotationCriteriaVersion, setAnnotationCriteriaVersion] = useState(0)
   const [annotationIndex, setAnnotationIndex] = useState<number | null>(null)
   const [selectedTransactionIds, setSelectedTransactionIds] = useState<number[]>([])
   const [batchEditorOpen, setBatchEditorOpen] = useState(false)
@@ -57,9 +59,12 @@ function App() {
   const [category, setCategory] = useState('')
   const [channel, setChannel] = useState('')
   const [query, setQuery] = useState('')
+  const [queryMode, setQueryMode] = useState<FilterMode>('include')
+  const [transactionFilters, setTransactionFilters] = useState<TransactionFilter[]>([])
   const fileRef = useRef<HTMLInputElement>(null)
   const heatmapRequestId = useRef(0)
   const dashboardRequestId = useRef(0)
+  const annotationRequestId = useRef(0)
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme
@@ -100,25 +105,41 @@ function App() {
   }, [dashboardRange, report, trendGranularity])
 
   const loadAnnotationQueue = useCallback(async () => {
+    const requestId = ++annotationRequestId.current
     setAnnotationLoading(true); setError('')
     try {
-      const result = await getTransactions({ month, category, channel, query, annotationStatus: 'pending' })
+      const result = await searchTransactions({
+        ...(transactionFilters.some((item) => item.field === 'transaction_time') ? {} : { month }),
+        ...(query.trim() ? { query: { text: query.trim(), mode: queryMode } } : {}),
+        filters: transactionFilters.map(serializeFilter), ...(category ? { category } : {}), ...(channel ? { channel } : {}),
+        annotation_status: 'pending', page: 1, page_size: 500,
+      })
+      if (requestId !== annotationRequestId.current) return []
       setTransactions(result.items)
       setTransactionTotal(result.total)
       setSelectedTransactionIds((current) => current.filter((id) => result.items.some((item) => item.id === id)))
       return result.items
     } catch (reason) {
-      report(reason); setTransactions([]); setTransactionTotal(0); setSelectedTransactionIds([])
+      if (requestId === annotationRequestId.current) { report(reason); setTransactions([]); setTransactionTotal(0); setSelectedTransactionIds([]) }
       return []
-    } finally { setAnnotationLoading(false) }
-  }, [month, category, channel, query, report])
+    } finally { if (requestId === annotationRequestId.current) setAnnotationLoading(false) }
+  }, [month, category, channel, query, queryMode, report, transactionFilters])
+
+  const invalidateAnnotationQueue = useCallback(() => {
+    annotationRequestId.current += 1
+    setAnnotationCriteriaVersion((value) => value + 1)
+    setAnnotationLoading(true)
+    setSelectedTransactionIds([])
+    setBatchEditorOpen(false)
+    setAnnotationIndex(null)
+  }, [])
 
   useEffect(() => { void Promise.all([loadDashboard(), loadHeatmaps(), loadCatalog(), loadRules()]).catch(report) }, [loadDashboard, loadHeatmaps, loadCatalog, loadRules, report])
   useEffect(() => {
     if (view !== 'annotations') return
     const timer = window.setTimeout(() => { void loadAnnotationQueue() }, 160)
     return () => window.clearTimeout(timer)
-  }, [view, loadAnnotationQueue])
+  }, [view, loadAnnotationQueue, annotationCriteriaVersion])
 
   async function handleImport(files: File[], archivePassword?: string) {
     if (!files.length) return
@@ -177,10 +198,14 @@ function App() {
       busy={busy} onPickFiles={() => fileRef.current?.click()} onManualEntry={() => setManualEntryOpen(true)}
     />}
     {view === 'annotations' && <AnnotationQueuePage
-      month={month} setMonth={setMonth} data={data}
+      month={month} setMonth={(value) => { invalidateAnnotationQueue(); setMonth(value) }} data={data}
       transactions={transactions} total={transactionTotal} loading={annotationLoading}
-      category={category} setCategory={setCategory} channel={channel} setChannel={setChannel}
-      query={query} setQuery={setQuery} selectedIds={selectedTransactionIds} setSelectedIds={setSelectedTransactionIds}
+      category={category} setCategory={(value) => { invalidateAnnotationQueue(); setCategory(value) }}
+      channel={channel} setChannel={(value) => { invalidateAnnotationQueue(); setChannel(value) }}
+      query={query} setQuery={(value) => { invalidateAnnotationQueue(); setQuery(value) }}
+      queryMode={queryMode} setQueryMode={(value) => { invalidateAnnotationQueue(); setQueryMode(value) }}
+      filters={transactionFilters} setFilters={(value) => { invalidateAnnotationQueue(); setTransactionFilters(value) }}
+      selectedIds={selectedTransactionIds} setSelectedIds={setSelectedTransactionIds}
       onAnnotate={(id) => setAnnotationIndex(transactions.findIndex((item) => item.id === id))}
       onBatchAnnotate={() => setBatchEditorOpen(true)}
     />}
@@ -204,7 +229,7 @@ function App() {
       onSubmit={(password) => { const files = pendingArchives; setPendingArchives([]); void handleImport(files, password) }}
     />}
     {manualEntryOpen && <ManualEntryDialog catalog={catalog} onClose={() => setManualEntryOpen(false)} onSaved={handleManualSaved} report={report} />}
-    <footer><span>LEDGER PILOT / V1.5.1</span><p>规则给建议，最终选择由你确认；原始流水永不被标注修改。</p></footer>
+    <footer><span>LEDGER PILOT / V1.6.0</span><p>规则给建议，最终选择由你确认；原始流水永不被标注修改。</p></footer>
   </main>
 }
 
@@ -357,9 +382,12 @@ function AnnotationQueuePage(props: {
   month: string; setMonth: (value: string) => void; data: DashboardData | null
   transactions: Transaction[]; total: number; loading: boolean
   category: string; setCategory: (value: string) => void; channel: string; setChannel: (value: string) => void
-  query: string; setQuery: (value: string) => void; selectedIds: number[]; setSelectedIds: (value: number[]) => void
+  query: string; setQuery: (value: string) => void; queryMode: FilterMode; setQueryMode: (value: FilterMode) => void
+  filters: TransactionFilter[]; setFilters: (value: TransactionFilter[]) => void; selectedIds: number[]; setSelectedIds: (value: number[]) => void
   onAnnotate: (id: number) => void; onBatchAnnotate: () => void
 }) {
+  const [filterPanelOpen, setFilterPanelOpen] = useState(false)
+  const [draftFilters, setDraftFilters] = useState<TransactionFilter[]>(props.filters)
   const allSelected = props.transactions.length > 0 && props.transactions.every((item) => props.selectedIds.includes(item.id))
   const categoryOptions = [...new Set([...(props.data?.categories.map((item) => item.name) ?? []), ...props.transactions.map((item) => item.category)])].filter((item) => item !== '未分类')
   const channelOptions = [...new Set([...(props.data?.channels.map((item) => item.name) ?? []), ...props.transactions.map((item) => item.channel)])].filter((item) => item !== '未识别')
@@ -369,17 +397,21 @@ function AnnotationQueuePage(props: {
   function toggleOne(id: number) {
     props.setSelectedIds(props.selectedIds.includes(id) ? props.selectedIds.filter((item) => item !== id) : [...props.selectedIds, id])
   }
-  const filtered = Boolean(props.query || props.category || props.channel)
+  const filtered = Boolean(props.query || props.category || props.channel || props.filters.length)
+  const dateRangeActive = props.filters.some((item) => item.field === 'transaction_time')
+  const clearFilters = () => { props.setQuery(''); props.setQueryMode('include'); props.setCategory(''); props.setChannel(''); props.setFilters([]) }
+  const openFilters = () => { setDraftFilters(props.filters); setFilterPanelOpen(true) }
   return <>
-    <MonthRail month={props.month} setMonth={props.setMonth} />
-    <section className="annotation-page-heading"><div><p className="eyebrow">REVIEW QUEUE / {props.month.replace('-', '.')}</p><h1>先搜出一类，再一次标完</h1><p>列表只保留尚未人工确认的流水。搜索相似交易，多选后统一标注，保存即从队列移除。</p></div><div className="queue-count"><span>{filtered ? '当前匹配' : '当前待办'}</span><strong>{props.total}</strong><small>笔流水</small></div></section>
+    {dateRangeActive ? <section className="date-filter-rail" aria-label="日期高级筛选范围"><div><span>CUSTOM RANGE</span><strong>日期条件已接管月份范围</strong></div><button className="button secondary" onClick={() => props.setFilters(props.filters.filter((item) => item.field !== 'transaction_time'))}>恢复月份快捷范围</button></section> : <MonthRail month={props.month} setMonth={props.setMonth} />}
+    <section className="annotation-page-heading"><div><p className="eyebrow">REVIEW QUEUE / {dateRangeActive ? 'CUSTOM RANGE' : props.month.replace('-', '.')}</p><h1>先筛出一类，再一次标完</h1><p>模糊搜索、字段包含或排除、日期和金额范围彼此独立；组合后只处理真正匹配的流水。</p></div><div className="queue-count"><span>{filtered ? '当前匹配' : '当前待办'}</span><strong>{props.total}</strong><small>笔流水</small></div></section>
     <section className="annotation-workspace" aria-label="待标注流水">
       <div className="annotation-toolbar">
-        <label className="search-field"><span>搜索待标注流水</span><input value={props.query} onChange={(event) => props.setQuery(event.target.value)} placeholder="商户、商品或备注" /></label>
-        <label><span>分类</span><select value={props.category} onChange={(event) => props.setCategory(event.target.value)}><option value="">全部分类</option>{categoryOptions.map((item) => <option key={item}>{item}</option>)}</select></label>
-        <label><span>渠道</span><select value={props.channel} onChange={(event) => props.setChannel(event.target.value)}><option value="">全部渠道</option>{channelOptions.map((item) => <option key={item}>{item}</option>)}</select></label>
-        {filtered && <button className="clear-filters" onClick={() => { props.setQuery(''); props.setCategory(''); props.setChannel('') }}>清除筛选</button>}
+        <label className="search-field"><span>全字段模糊搜索</span><div className="search-composer"><select aria-label="模糊搜索模式" value={props.queryMode} onChange={(event) => props.setQueryMode(event.target.value as FilterMode)}><option value="include">包含</option><option value="exclude">排除</option></select><input aria-label="搜索待标注流水" value={props.query} onChange={(event) => props.setQuery(event.target.value)} placeholder="搜索全部清洗字段" /></div></label>
+        <label><span>有效分类</span><select value={props.category} onChange={(event) => props.setCategory(event.target.value)}><option value="">全部分类</option>{categoryOptions.map((item) => <option key={item}>{item}</option>)}</select></label>
+        <label><span>有效渠道</span><select value={props.channel} onChange={(event) => props.setChannel(event.target.value)}><option value="">全部渠道</option>{channelOptions.map((item) => <option key={item}>{item}</option>)}</select></label>
+        <button className="button secondary advanced-filter-trigger" onClick={openFilters}>高级筛选{props.filters.length ? ` (${props.filters.length})` : ''}</button>
       </div>
+      {(props.filters.length > 0 || filtered) && <div className="active-filter-row"><div>{props.filters.map((item, index) => <button key={`${item.field}-${index}`} onClick={() => props.setFilters(props.filters.filter((_, itemIndex) => itemIndex !== index))}>{filterDescription(item)} <span>×</span></button>)}{dateRangeActive && <small>日期条件已接管月份快捷范围</small>}</div><button className="clear-filters" onClick={clearFilters}>清除全部筛选</button></div>}
       <div className={`selection-dock ${props.selectedIds.length ? 'active' : ''}`} role="status">
         <div><b>{props.selectedIds.length ? `已选 ${props.selectedIds.length} 笔` : '先搜索，再选择相似流水'}</b><span>{props.selectedIds.length ? '将为这些流水保存完全相同的人工标注' : '可逐笔处理，也可全选当前搜索结果'}</span></div>
         {props.selectedIds.length > 0 && <div><button className="button ghost" onClick={() => props.setSelectedIds([])}>取消选择</button><button className="button primary" onClick={props.onBatchAnnotate}>统一标注 {props.selectedIds.length} 笔</button></div>}
@@ -387,7 +419,19 @@ function AnnotationQueuePage(props: {
       {props.total > props.transactions.length && <p className="queue-limit">当前加载前 {props.transactions.length} 笔，共匹配 {props.total} 笔；可继续收紧搜索后分批处理。</p>}
       {props.loading ? <DashboardSkeleton /> : props.transactions.length ? <div className="table-wrap annotation-table"><table><thead><tr><th className="select-cell"><input type="checkbox" checked={allSelected} onChange={toggleAll} aria-label="全选当前搜索结果" /></th><th>日期</th><th>交易摘要</th><th>分类</th><th>支付渠道</th><th>金额</th><th /></tr></thead><tbody>{props.transactions.map((item) => <tr key={item.id} className={props.selectedIds.includes(item.id) ? 'selected' : ''} onDoubleClick={() => props.onAnnotate(item.id)}><td className="select-cell"><input type="checkbox" checked={props.selectedIds.includes(item.id)} onChange={() => toggleOne(item.id)} aria-label={`选择 ${item.merchant} ${item.date.slice(0, 10)}`} /></td><td>{item.date.slice(0, 16)}</td><td><strong>{item.merchant}</strong>{item.itemDescription && <small>{item.itemDescription}</small>}</td><td><span className="tag">{item.category}<i className={item.categorySource}>{item.categorySource === 'rule' ? '规则' : '未确认'}</i></span></td><td>{item.channel}</td><td className={item.direction === 'expense' ? 'amount expense' : 'amount income'}>{item.direction === 'expense' ? '−' : '+'}{money.format(Math.abs(item.amount))}</td><td><button className="row-action" onClick={() => props.onAnnotate(item.id)}>标注此笔</button></td></tr>)}</tbody></table></div> : <div className="queue-empty"><span>✓</span><h2>{filtered ? '没有符合当前条件的待标注流水' : '这个月的待标注队列已清空'}</h2><p>{filtered ? '调整搜索词或清除筛选，继续处理其他流水。' : '人工确认过的流水不会再次出现；新导入的流水会自动进入这里。'}</p></div>}
     </section>
+    {filterPanelOpen && <AdvancedFilterPanel filters={draftFilters} setFilters={setDraftFilters} onClose={() => setFilterPanelOpen(false)} onApply={() => { props.setFilters(draftFilters); setFilterPanelOpen(false) }} />}
   </>
+}
+
+function validTransactionFilter(filter: TransactionFilter) { return filter.operator === 'is_empty' || (filter.operator === 'range' ? Boolean(filter.min || filter.max) : Boolean(filter.value?.trim())) }
+
+function AdvancedFilterPanel({ filters, setFilters, onClose, onApply }: { filters: TransactionFilter[]; setFilters: (value: TransactionFilter[]) => void; onClose: () => void; onApply: () => void }) {
+  const update = (index: number, patch: Partial<TransactionFilter>) => setFilters(filters.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item))
+  return <div className="advanced-filter-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><section className="advanced-filter-panel" role="dialog" aria-modal="true" aria-labelledby="advanced-filter-title"><header><div><p className="eyebrow">NORMALIZED LEDGER FILTERS</p><h2 id="advanced-filter-title">高级筛选</h2><p>每条条件可独立包含或排除；同字段多个包含值取任一命中，跨字段需要同时满足。</p></div><button className="close-button" onClick={onClose} aria-label="关闭高级筛选">×</button></header><div className="advanced-filter-body">{filters.length ? filters.map((filter, index) => {
+    const definition = filterField(filter.field)
+    const textOperators: Array<[TransactionFilter['operator'], string]> = definition.type === 'enum' ? [['equals', '精确匹配'], ['is_empty', '为空']] : [['contains', '模糊匹配'], ['equals', '精确匹配'], ['is_empty', '为空']]
+    return <article className="advanced-filter-condition" key={`${filter.field}-${index}`}><label>字段<select value={filter.field} onChange={(event) => { const field = event.target.value as TransactionFilter['field']; update(index, { field, operator: defaultOperator(field), value: '', min: '', max: '' }) }}>{NORMALIZED_FILTER_FIELDS.map((item) => <option key={item.key} value={item.key}>{item.label}</option>)}</select></label><label>方向<select value={filter.mode} onChange={(event) => update(index, { mode: event.target.value as FilterMode })}><option value="include">包含</option><option value="exclude">排除</option></select></label><label>匹配方式<select value={filter.operator} onChange={(event) => update(index, { operator: event.target.value as TransactionFilter['operator'], value: '', min: '', max: '' })}>{definition.type === 'date' || definition.type === 'amount' ? <><option value="range">范围</option><option value="is_empty">为空</option></> : textOperators.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>{filter.operator === 'range' ? <div className="filter-range-inputs"><label>下限<input aria-label={`${definition.label}下限`} type={definition.type === 'date' ? 'date' : 'number'} step={definition.type === 'amount' ? '0.01' : undefined} value={filter.min ?? ''} onChange={(event) => update(index, { min: event.target.value })} /></label><span>至</span><label>上限<input aria-label={`${definition.label}上限`} type={definition.type === 'date' ? 'date' : 'number'} step={definition.type === 'amount' ? '0.01' : undefined} value={filter.max ?? ''} onChange={(event) => update(index, { max: event.target.value })} /></label></div> : filter.operator !== 'is_empty' && <label className="filter-value">值{definition.options ? <select aria-label={`${definition.label}筛选值`} value={filter.value ?? ''} onChange={(event) => update(index, { value: event.target.value })}><option value="">请选择</option>{definition.options.map((item) => <option key={item}>{item}</option>)}</select> : <input aria-label={`${definition.label}筛选值`} value={filter.value ?? ''} onChange={(event) => update(index, { value: event.target.value })} placeholder="输入筛选值" />}</label>}<button className="remove-filter" onClick={() => setFilters(filters.filter((_, itemIndex) => itemIndex !== index))} aria-label={`删除 ${definition.label} 条件`}>删除</button></article>
+  }) : <div className="advanced-filter-empty"><span>＋</span><p>还没有字段条件。模糊搜索仍可独立使用。</p></div>}</div><footer className="advanced-filter-actions"><button className="button secondary" onClick={() => setFilters([...filters, emptyFilter()])}>添加字段条件</button><div><button className="button ghost" onClick={onClose}>取消</button><button className="button primary" disabled={filters.some((item) => !validTransactionFilter(item))} onClick={onApply}>应用 {filters.length} 条筛选</button></div></footer></section></div>
 }
 
 function AnnotationDialog({ transaction, catalog, hasPrevious, hasNext, onPrevious, onNext, onClose, onSaved, report }: {

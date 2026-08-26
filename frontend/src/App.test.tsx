@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
+import { NORMALIZED_FILTER_FIELDS } from './transactionFilters'
 
 beforeEach(() => {
   window.localStorage.clear()
@@ -21,6 +22,13 @@ beforeEach(() => {
 afterEach(() => { cleanup(); window.localStorage.clear(); delete document.documentElement.dataset.theme })
 
 describe('App', () => {
+  it('高级筛选字段注册表完整覆盖清洗后总表 16 个字段', () => {
+    expect(NORMALIZED_FILTER_FIELDS.map((item) => item.key)).toEqual([
+      'source_platform', 'transaction_time', 'direction', 'amount', 'counterparty', 'item_description',
+      'payment_method', 'payment_channel', 'transaction_status', 'status_category', 'transaction_id',
+      'merchant_order_id', 'transaction_type', 'source_category', 'counterparty_account', 'note',
+    ])
+  })
   it('展示核心审阅入口和月度数据', async () => {
     render(<App />)
     expect(screen.getByRole('button', { name: '导入账单' })).toBeInTheDocument()
@@ -156,8 +164,9 @@ describe('App', () => {
         pending = pending.filter((item) => !body.transaction_ids.includes(item.id))
         return response({ updated: body.transaction_ids.length })
       }
-      if (url.includes('/api/transactions?')) {
-        const search = new URL(url, 'http://local').searchParams.get('query')?.toLocaleLowerCase() ?? ''
+      if (url.includes('/api/transactions/search')) {
+        const body = JSON.parse(String(init?.body)) as { query?: { text: string } }
+        const search = body.query?.text.toLocaleLowerCase() ?? ''
         const items = pending.filter((item) => `${item.merchant} ${item.itemDescription}`.toLocaleLowerCase().includes(search))
         return response({ items, total: items.length, page: 1, pageSize: 500 })
       }
@@ -169,11 +178,11 @@ describe('App', () => {
     render(<App />)
     expect(screen.queryByLabelText('待标注流水')).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '流水标注' }))
-    expect(await screen.findByRole('heading', { name: '先搜出一类，再一次标完' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '先筛出一类，再一次标完' })).toBeInTheDocument()
     expect(await screen.findByText('滴滴出行')).toBeInTheDocument()
     fireEvent.change(screen.getByLabelText('搜索待标注流水'), { target: { value: '咖啡' } })
-    await waitFor(() => expect(screen.queryByText('滴滴出行')).not.toBeInTheDocument())
-    expect(screen.getByText('星巴克咖啡')).toBeInTheDocument()
+    expect(await screen.findByText('星巴克咖啡')).toBeInTheDocument()
+    expect(screen.queryByText('滴滴出行')).not.toBeInTheDocument()
     expect(screen.getByText('瑞幸咖啡')).toBeInTheDocument()
 
     fireEvent.click(screen.getByLabelText('全选当前搜索结果'))
@@ -186,6 +195,115 @@ describe('App', () => {
     expect(screen.queryByText('瑞幸咖啡')).not.toBeInTheDocument()
     const batchRequest = requests.find((item) => item.url.includes('/api/annotations/batch'))
     expect(JSON.parse(String(batchRequest?.init?.body))).toEqual({ transaction_ids: [11, 12], label_ids: [] })
+  })
+
+  it('组合模糊搜索、包含排除、日期和金额范围发送结构化请求', async () => {
+    const searchBodies: Array<Record<string, unknown>> = []
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((input: string, init?: RequestInit) => {
+      const url = String(input)
+      if (url.includes('/api/label-catalog') || url.endsWith('/api/rules')) return response([])
+      if (url.includes('/api/heatmaps')) return response({ year: 2026, expense: [], income: [] })
+      if (url.includes('/api/transactions/search')) {
+        searchBodies.push(JSON.parse(String(init?.body)))
+        return response({ items: [], total: 0, page: 1, pageSize: 500 })
+      }
+      return response({ summary: { income: 0, expense: 0, net: 0 }, trend: [], categories: [], channels: [], distributions: [], recent: [] })
+    }))
+
+    render(<App />)
+    fireEvent.click(screen.getByRole('button', { name: '流水标注' }))
+    fireEvent.change(screen.getByLabelText('搜索待标注流水'), { target: { value: '咖啡' } })
+    fireEvent.change(screen.getByLabelText('模糊搜索模式'), { target: { value: 'exclude' } })
+    fireEvent.click(screen.getByRole('button', { name: '高级筛选' }))
+    const dialog = screen.getByRole('dialog', { name: '高级筛选' })
+
+    fireEvent.click(within(dialog).getByRole('button', { name: '添加字段条件' }))
+    fireEvent.change(within(dialog).getByLabelText('交易对方筛选值'), { target: { value: '星巴克' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: '添加字段条件' }))
+    fireEvent.change(within(dialog).getAllByLabelText('字段')[1], { target: { value: 'amount' } })
+    fireEvent.change(within(dialog).getAllByLabelText('方向')[1], { target: { value: 'exclude' } })
+    fireEvent.change(within(dialog).getByLabelText('绝对金额下限'), { target: { value: '10.00' } })
+    fireEvent.change(within(dialog).getByLabelText('绝对金额上限'), { target: { value: '100.00' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: '添加字段条件' }))
+    fireEvent.change(within(dialog).getAllByLabelText('字段')[2], { target: { value: 'transaction_time' } })
+    fireEvent.change(within(dialog).getByLabelText('交易时间下限'), { target: { value: '2026-07-15' } })
+    fireEvent.change(within(dialog).getByLabelText('交易时间上限'), { target: { value: '2026-08-20' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: '应用 3 条筛选' }))
+
+    await waitFor(() => expect(searchBodies.some((body) => Array.isArray(body.filters) && body.filters.length === 3)).toBe(true))
+    const body = [...searchBodies].reverse().find((item) => Array.isArray(item.filters) && item.filters.length === 3)
+    expect(body).toMatchObject({
+      query: { text: '咖啡', mode: 'exclude' }, annotation_status: 'pending', page: 1, page_size: 500,
+      filters: [
+        { field: 'counterparty', mode: 'include', operator: 'contains', value: '星巴克' },
+        { field: 'amount', mode: 'exclude', operator: 'range', min: '10.00', max: '100.00' },
+        { field: 'transaction_time', mode: 'include', operator: 'range', min: '2026-07-15', max: '2026-08-20' },
+      ],
+    })
+    expect(body).not.toHaveProperty('month')
+    expect(screen.getByText('日期条件已接管月份快捷范围')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '恢复月份快捷范围' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '恢复月份快捷范围' }))
+    await waitFor(() => expect(searchBodies.some((item) => item.month === '2026-08' && Array.isArray(item.filters) && item.filters.length === 2)).toBe(true))
+  })
+
+  it('筛选变化立即清空选择并拒绝 debounce 窗口内的旧响应', async () => {
+    let searchCall = 0
+    let resolveStale: ((value: { ok: boolean; json: () => Promise<unknown> }) => void) | undefined
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((input: string) => {
+      const url = String(input)
+      if (url.includes('/api/label-catalog') || url.endsWith('/api/rules')) return response([])
+      if (url.includes('/api/heatmaps')) return response({ year: 2026, expense: [], income: [] })
+      if (url.includes('/api/transactions/search')) {
+        searchCall += 1
+        if (searchCall === 1) return response({ items: [transaction(31, '初始流水', '等待筛选')], total: 1, page: 1, pageSize: 500 })
+        if (searchCall === 2) return new Promise((resolve) => { resolveStale = resolve })
+        return response({ items: [], total: 0, page: 1, pageSize: 500 })
+      }
+      return response({ summary: { income: 0, expense: 0, net: 0 }, trend: [], categories: [], channels: [], distributions: [], recent: [] })
+    }))
+
+    render(<App />)
+    fireEvent.click(screen.getByRole('button', { name: '流水标注' }))
+    expect(await screen.findByText('初始流水')).toBeInTheDocument()
+    fireEvent.click(screen.getByLabelText('选择 初始流水 2026-08-25'))
+    expect(screen.getByRole('button', { name: '统一标注 1 笔' })).toBeInTheDocument()
+
+    fireEvent.change(screen.getByLabelText('搜索待标注流水'), { target: { value: '第一条件' } })
+    expect(screen.queryByRole('button', { name: '统一标注 1 笔' })).not.toBeInTheDocument()
+    await waitFor(() => expect(searchCall).toBe(2))
+
+    fireEvent.change(screen.getByLabelText('搜索待标注流水'), { target: { value: '第二条件' } })
+    resolveStale?.(await response({ items: [transaction(32, '旧请求结果', '不应落地')], total: 1, page: 1, pageSize: 500 }))
+    await Promise.resolve()
+    expect(screen.queryByText('旧请求结果')).not.toBeInTheDocument()
+  })
+
+  it('重复应用同值月份和空筛选仍会完成刷新', async () => {
+    let searches = 0
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((input: string) => {
+      const url = String(input)
+      if (url.includes('/api/label-catalog') || url.endsWith('/api/rules')) return response([])
+      if (url.includes('/api/heatmaps')) return response({ year: 2026, expense: [], income: [] })
+      if (url.includes('/api/transactions/search')) {
+        searches += 1
+        return response({ items: [transaction(41, '稳定流水', '同值刷新')], total: 1, page: 1, pageSize: 500 })
+      }
+      return response({ summary: { income: 0, expense: 0, net: 0 }, trend: [], categories: [], channels: [], distributions: [], recent: [] })
+    }))
+
+    render(<App />)
+    fireEvent.click(screen.getByRole('button', { name: '流水标注' }))
+    expect(await screen.findByText('稳定流水')).toBeInTheDocument()
+    fireEvent.click(document.querySelector('.month-tick.active') as HTMLElement)
+    await waitFor(() => expect(searches).toBe(2))
+    expect(await screen.findByText('稳定流水')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '高级筛选' }))
+    fireEvent.click(within(screen.getByRole('dialog', { name: '高级筛选' })).getByRole('button', { name: '应用 0 条筛选' }))
+    await waitFor(() => expect(searches).toBe(3))
+    expect(await screen.findByText('稳定流水')).toBeInTheDocument()
+    expect(screen.queryByLabelText('正在读取')).not.toBeInTheDocument()
   })
 })
 

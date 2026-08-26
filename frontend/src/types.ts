@@ -13,10 +13,19 @@ export interface Transaction {
   amount: number; direction: 'income' | 'expense'; category: string; categorySource: 'manual' | 'rule' | 'unassigned'
   channel: string; channelSource: 'manual' | 'rule' | 'unassigned'; labelSource: 'manual' | 'rule' | 'unassigned'
   effectiveLabels: AssignedLabel[]; sourcePlatform: string; transactionId: string; transactionType?: string
-  sourceCategory?: string; paymentMethod?: string; status: string
+  sourceCategory?: string; paymentMethod?: string; status: string; statusCategory?: string
+  transactionStatus?: string; merchantOrderId?: string; counterpartyAccount?: string; cleanedPaymentChannel?: string
 }
 export interface DashboardData { summary: Summary; trend: TrendPoint[]; categories: DistributionItem[]; channels: DistributionItem[]; distributions?: DashboardDistribution[]; recent: Transaction[] }
 export interface TransactionPage { items: Transaction[]; total: number; page: number; pageSize: number }
+export type NormalizedField = 'source_platform' | 'transaction_time' | 'direction' | 'amount' | 'counterparty' | 'item_description' | 'payment_method' | 'payment_channel' | 'transaction_status' | 'status_category' | 'transaction_id' | 'merchant_order_id' | 'transaction_type' | 'source_category' | 'counterparty_account' | 'note'
+export type FilterMode = 'include' | 'exclude'
+export type FilterOperator = 'equals' | 'contains' | 'range' | 'is_empty'
+export interface TransactionFilter { field: NormalizedField; mode: FilterMode; operator: FilterOperator; value?: string; min?: string; max?: string }
+export interface TransactionSearchRequest {
+  month?: string; query?: { text: string; mode: FilterMode }; filters: TransactionFilter[]
+  category?: string; channel?: string; annotation_status?: 'pending' | 'completed'; page: number; page_size: number
+}
 export interface HeatmapPoint { date: string; value: number; count: number }
 export interface HeatmapData { year: number; expense: HeatmapPoint[]; income: HeatmapPoint[] }
 export interface ImportResult { imported: number; merged: number; skipped: number }

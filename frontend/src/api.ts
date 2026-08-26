@@ -1,4 +1,4 @@
-import type { AnnotationData, DashboardData, DashboardGranularity, DashboardRange, HeatmapData, ImportResult, LabelDimension, LabelNode, ManualTransactionInput, MerchantRule, Transaction, TransactionPage } from './types'
+import type { AnnotationData, DashboardData, DashboardGranularity, DashboardRange, HeatmapData, ImportResult, LabelDimension, LabelNode, ManualTransactionInput, MerchantRule, Transaction, TransactionPage, TransactionSearchRequest } from './types'
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? ''
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -26,6 +26,7 @@ export async function getTransactions(params: { month: string; category?: string
   if (params.annotationStatus) query.set('annotation_status', params.annotationStatus)
   return request<TransactionPage>(`/api/transactions?${query}`)
 }
+export const searchTransactions = (body: TransactionSearchRequest) => request<TransactionPage>('/api/transactions/search', json('POST', body))
 export const getLabelCatalog = () => request<LabelDimension[]>('/api/label-catalog')
 export const createDimension = (body: object) => request<LabelDimension>('/api/label-dimensions', json('POST', body))
 export const updateDimension = (id: string, body: object) => request<LabelDimension>(`/api/label-dimensions/${id}`, json('PATCH', body))

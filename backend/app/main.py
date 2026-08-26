@@ -7,13 +7,13 @@ from collections import defaultdict
 from collections.abc import AsyncIterator, Generator
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Literal
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import and_, delete, func, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
@@ -33,6 +33,95 @@ from .services import persist_import, persist_manual_transaction
 
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
+
+NORMALIZED_FIELD_NAMES = (
+    "source_platform", "transaction_time", "direction", "amount", "counterparty",
+    "item_description", "payment_method", "payment_channel", "transaction_status",
+    "status_category", "transaction_id", "merchant_order_id", "transaction_type",
+    "source_category", "counterparty_account", "note",
+)
+NormalizedFieldName = Literal[
+    "source_platform", "transaction_time", "direction", "amount", "counterparty",
+    "item_description", "payment_method", "payment_channel", "transaction_status",
+    "status_category", "transaction_id", "merchant_order_id", "transaction_type",
+    "source_category", "counterparty_account", "note",
+]
+
+
+class TransactionSearchQuery(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    text: str = Field(min_length=1, max_length=200)
+    mode: Literal["include", "exclude"] = "include"
+
+
+class TransactionSearchFilter(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    field: NormalizedFieldName
+    mode: Literal["include", "exclude"]
+    operator: Literal["equals", "contains", "range", "is_empty"]
+    value: str | None = None
+    min: str | None = None
+    max: str | None = None
+
+    @model_validator(mode="after")
+    def validate_operator_and_values(self) -> "TransactionSearchFilter":
+        is_range_field = self.field in {"transaction_time", "amount"}
+        allowed = {"range", "is_empty"} if is_range_field else {"equals", "contains", "is_empty"}
+        if self.operator not in allowed:
+            raise ValueError(f"{self.field} 不支持 {self.operator} 操作")
+        if self.operator in {"equals", "contains"}:
+            if self.value is None or not self.value.strip():
+                raise ValueError(f"{self.operator} 必须提供非空 value")
+            if self.min is not None or self.max is not None:
+                raise ValueError(f"{self.operator} 不能提供 min 或 max")
+        elif self.operator == "range":
+            if self.value is not None or (self.min is None and self.max is None):
+                raise ValueError("range 必须提供 min 或 max，且不能提供 value")
+            try:
+                lower = _search_bound(self.field, self.min) if self.min is not None else None
+                upper = _search_bound(self.field, self.max, upper=True) if self.max is not None else None
+            except (ValueError, OverflowError, InvalidOperation) as exc:
+                raise ValueError(f"{self.field} 范围值无效") from exc
+            empty_date_interval = (
+                self.field == "transaction_time" and self.max is not None
+                and _date_only(self.max) and lower is not None and lower >= upper
+            )
+            if lower is not None and upper is not None and (lower > upper or empty_date_interval):
+                raise ValueError("range 的 min 不能大于 max")
+        elif self.value is not None or self.min is not None or self.max is not None:
+            raise ValueError("is_empty 不能提供 value、min 或 max")
+        return self
+
+
+class TransactionSearchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    month: str | None = None
+    query: TransactionSearchQuery | None = None
+    filters: list[TransactionSearchFilter] = Field(default_factory=list, max_length=32)
+    category: str | None = None
+    channel: str | None = None
+    annotation_status: Literal["pending", "completed"] | None = None
+    page: int = Field(1, ge=1)
+    page_size: int = Field(100, ge=1, le=500)
+
+
+def _date_only(value: str) -> bool:
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").strftime("%Y-%m-%d") == value
+    except ValueError:
+        return False
+
+
+def _search_bound(field: str, value: str, *, upper: bool = False) -> datetime | Decimal:
+    if field == "transaction_time":
+        parsed = datetime.fromisoformat(value)
+        if parsed.tzinfo is not None:
+            raise ValueError("transaction_time 必须是不带时区的本地时间")
+        return parsed + timedelta(days=1) if upper and _date_only(value) else parsed
+    parsed_decimal = Decimal(value)
+    if not parsed_decimal.is_finite():
+        raise ValueError("amount 必须是有限数值")
+    return parsed_decimal
 
 
 class DimensionCreate(BaseModel):
@@ -197,8 +286,67 @@ def _transaction_item(session: Session, transaction: Transaction) -> dict[str, o
         "effectiveLabels": assignments["effective"], "sourcePlatform": transaction.source_platform,
         "transactionId": transaction.transaction_id, "transactionType": transaction.transaction_type,
         "sourceCategory": transaction.source_category, "paymentMethod": transaction.payment_method,
-        "status": transaction.status_category,
+        "status": transaction.status_category, "transactionStatus": transaction.transaction_status,
+        "statusCategory": transaction.status_category, "merchantOrderId": transaction.merchant_order_id,
+        "counterpartyAccount": transaction.counterparty_account,
+        "cleanedPaymentChannel": transaction.payment_channel,
     }
+
+
+def _normalized_string(value: object | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, datetime):
+        return value.isoformat(sep=" ")
+    return str(value)
+
+
+def _search_filter_matches(transaction: Transaction, condition: TransactionSearchFilter) -> bool:
+    value = getattr(transaction, condition.field)
+    if condition.operator == "is_empty":
+        return value is None or (isinstance(value, str) and value == "")
+    if condition.operator == "equals":
+        return value == condition.value
+    if condition.operator == "contains":
+        return condition.value.casefold() in _normalized_string(value).casefold()
+    if value is None:
+        return False
+    lower = _search_bound(condition.field, condition.min) if condition.min is not None else None
+    upper = _search_bound(condition.field, condition.max, upper=True) if condition.max is not None else None
+    upper_matches = upper is None or (
+        value < upper
+        if condition.field == "transaction_time" and condition.max is not None and _date_only(condition.max)
+        else value <= upper
+    )
+    return (lower is None or value >= lower) and upper_matches
+
+
+def _matches_normalized_filters(
+    transaction: Transaction,
+    filters: list[TransactionSearchFilter],
+) -> bool:
+    by_field: dict[str, list[TransactionSearchFilter]] = defaultdict(list)
+    for condition in filters:
+        by_field[condition.field].append(condition)
+    for conditions in by_field.values():
+        included = [condition for condition in conditions if condition.mode == "include"]
+        excluded = [condition for condition in conditions if condition.mode == "exclude"]
+        if included and not any(_search_filter_matches(transaction, condition) for condition in included):
+            return False
+        if any(_search_filter_matches(transaction, condition) for condition in excluded):
+            return False
+    return True
+
+
+def _matches_global_query(transaction: Transaction, query: TransactionSearchQuery | None) -> bool:
+    if query is None:
+        return True
+    needle = query.text.casefold()
+    matched = any(
+        needle in _normalized_string(getattr(transaction, field)).casefold()
+        for field in NORMALIZED_FIELD_NAMES
+    )
+    return matched if query.mode == "include" else not matched
 
 
 def _rule_item(rule: MerchantRule) -> dict:
@@ -250,7 +398,7 @@ def create_app(*, database_url: str | None = None, data_root: str | Path | None 
         yield
         engine.dispose()
 
-    application = FastAPI(title="Ledger Pilot API", version="1.5.1", lifespan=lifespan)
+    application = FastAPI(title="Ledger Pilot API", version="1.6.0", lifespan=lifespan)
     application.state.engine = engine
     application.state.data_root = resolved_data_root
     origins = [item.strip() for item in os.getenv(
@@ -626,6 +774,36 @@ def create_app(*, database_url: str | None = None, data_root: str | Path | None 
             and (not normalized_query or normalized_query in f"{item['merchant']} {item.get('note') or ''} {item.get('itemDescription') or ''}".casefold()))]
         total = len(items); start = (page - 1) * page_size; session.commit()
         return {"items": items[start:start + page_size], "total": total, "page": page, "pageSize": page_size}
+
+    @application.post("/api/transactions/search")
+    def search_transactions(
+        body: TransactionSearchRequest,
+        session: Session = Depends(session_dependency),
+    ) -> dict[str, object]:
+        rows = filtered_transactions(body.month, session)
+        if body.annotation_status == "pending":
+            rows = [row for row in rows if row.labeled_at is None]
+        elif body.annotation_status == "completed":
+            rows = [row for row in rows if row.labeled_at is not None]
+        rows = [
+            row for row in rows
+            if _matches_normalized_filters(row, body.filters) and _matches_global_query(row, body.query)
+        ]
+        items = [_transaction_item(session, row) for row in rows]
+        items = [
+            item for item in items
+            if (not body.category or item["category"] == body.category)
+            and (not body.channel or item["channel"] == body.channel)
+        ]
+        total = len(items)
+        start = (body.page - 1) * body.page_size
+        session.commit()
+        return {
+            "items": items[start:start + body.page_size],
+            "total": total,
+            "page": body.page,
+            "pageSize": body.page_size,
+        }
 
     @application.get("/api/audit-logs")
     def audit_logs(limit: int = Query(100, ge=1, le=500), session: Session = Depends(session_dependency)) -> list[dict]:
