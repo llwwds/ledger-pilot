@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Generator
 from pathlib import Path
 
 from sqlalchemy import create_engine
@@ -28,12 +27,3 @@ def build_engine(database_url: str | None = None) -> Engine:
 
 def build_session_factory(engine: Engine) -> sessionmaker[Session]:
     return sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
-
-
-engine = build_engine()
-SessionLocal = build_session_factory(engine)
-
-
-def get_session() -> Generator[Session, None, None]:
-    with SessionLocal() as session:
-        yield session

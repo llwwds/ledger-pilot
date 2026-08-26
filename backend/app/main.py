@@ -30,9 +30,8 @@ from .models import (
     TransactionLabelAssignment, utc_now,
 )
 from .services import persist_import, persist_manual_transaction
+from .settings import load_local_settings
 
-
-BACKEND_ROOT = Path(__file__).resolve().parents[1]
 
 NORMALIZED_FIELD_NAMES = (
     "source_platform", "transaction_time", "direction", "amount", "counterparty",
@@ -385,9 +384,19 @@ def _rule_reference_count(session: Session, label_ids: list[int]) -> int:
 
 
 def create_app(*, database_url: str | None = None, data_root: str | Path | None = None) -> FastAPI:
-    engine: Engine = build_engine(database_url)
+    cors_env = os.getenv("LEDGER_PILOT_CORS_ORIGINS")
+    database_env = os.getenv("LEDGER_PILOT_DATABASE_URL")
+    settings = load_local_settings(
+        data_dir=data_root if data_root is not None else (os.getenv("LEDGER_PILOT_DATA_DIR") or None),
+        database_url=database_url if database_url is not None else database_env,
+        cors_origins=tuple(item.strip() for item in cors_env.split(",") if item.strip()) if cors_env is not None else None,
+    )
+    resolved_data_root = settings.data_dir
+    resolved_database_url = settings.database_url
+    if not resolved_database_url:
+        resolved_database_url = f"sqlite:///{resolved_data_root / 'bookkeeping.db'}"
+    engine: Engine = build_engine(resolved_database_url)
     session_factory: sessionmaker[Session] = build_session_factory(engine)
-    resolved_data_root = Path(data_root or os.getenv("LEDGER_PILOT_DATA_DIR") or (BACKEND_ROOT / "data")).resolve()
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -398,12 +407,10 @@ def create_app(*, database_url: str | None = None, data_root: str | Path | None 
         yield
         engine.dispose()
 
-    application = FastAPI(title="Ledger Pilot API", version="1.6.0", lifespan=lifespan)
+    application = FastAPI(title="Ledger Pilot API", version="1.7.0", lifespan=lifespan)
     application.state.engine = engine
     application.state.data_root = resolved_data_root
-    origins = [item.strip() for item in os.getenv(
-        "LEDGER_PILOT_CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173"
-    ).split(",") if item.strip()]
+    origins = list(settings.cors_origins)
     application.add_middleware(
         CORSMiddleware, allow_origins=origins, allow_credentials=True,
         allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE"], allow_headers=["*"],

@@ -2,6 +2,13 @@
 
 本地优先的个人记账应用。支持导入并合并微信/支付宝账单、手动补录例外流水、用精确规则预填后搜索或批量人工确认，并在 Web 总看板按年度、月度或自定义范围查看有效标签下的财务结果。完整版本描述见 [RELEASE_NOTES.md](RELEASE_NOTES.md)。
 
+## v1.7.0 新增
+
+- 项目以 MIT 许可证开放源代码；仓库只保留代码、安全默认值和使用文档，不跟踪账单原件、数据库、本地配置、环境变量、虚拟环境或构建产物。
+- 后端首次启动时，仅在 `backend/config.local.json` 整个不存在时从公开的 `backend/config.default.json` 创建本地配置。
+- 已存在的本地配置（包括空文件）始终视为用户内容，不会被初始化过程覆盖或补写；缺失字段只在运行内存中回落到公开默认值。
+- 支持用 `LEDGER_PILOT_CONFIG_FILE` 指向其他本地配置，环境变量仍优先于 JSON 配置。
+
 ## v1.6.0 新增
 
 - 流水标注增加高级筛选器，覆盖归一化流水表的 16 个字段；同字段的多个“包含”条件取并集，不同字段取交集，“排除”条件会在最后剔除命中项。
@@ -143,9 +150,31 @@ npm run dev
 
 ## 运行参数
 
+默认设置在 `backend/config.default.json` 中公开。首次启动会以 `0600` 权限生成已被 Git 忽略的 `backend/config.local.json`；如需自定义，只修改本地文件即可。配置格式：
+
+```json
+{
+  "data_dir": "data",
+  "database_url": "",
+  "cors_origins": ["http://localhost:5173", "http://127.0.0.1:5173"]
+}
+```
+
+空的 `database_url` 表示在 `data_dir` 下使用 `bookkeeping.db`。本地配置文件只在完全缺失时创建；已有文件哪怕为空也不会被改写。也可参考 `.env.example`，在启动进程中导出下列环境变量进行覆盖：
+
+- `LEDGER_PILOT_CONFIG_FILE`：指定本地 JSON 配置文件。
 - `LEDGER_PILOT_DATA_DIR`：导入原件目录。
 - `LEDGER_PILOT_DATABASE_URL`：覆盖默认 SQLite URL。
 - `LEDGER_PILOT_CORS_ORIGINS`：允许访问 API 的 Web 来源，逗号分隔。
+- `VITE_API_BASE_URL`：前端访问其他后端地址时使用；留空则走同源 `/api`。
+
+最终配置优先级为：`create_app` 显式参数 > 环境变量 > `config.local.json` > `config.default.json`，合并后才校验最终值。`LEDGER_PILOT_CONFIG_FILE` 的相对路径按启动进程的当前目录解析；无论配置来自哪一层，相对 `data_dir` 都固定按 `backend/` 解析，避免从不同工作目录启动时产生多份数据库。空的 `LEDGER_PILOT_CORS_ORIGINS` 表示不允许跨域来源。
+
+## 隐私与开源边界
+
+Git 会忽略 `backend/data/`、数据库文件、`backend/config.local.json`、所有 `.env*`（仅保留 `.env.example`）、Python/Node 依赖、测试缓存和前端构建产物。提交前可用 `git status --ignored --short` 自查；不要把真实账单、账号、解压密码或个人路径复制进 README、issue 或测试夹具。
+
+本项目采用 [MIT License](LICENSE)。
 
 ## 验证
 
@@ -166,6 +195,8 @@ npm run build
 backend/app/annotations.py  标签目录、规则建议、人工优先级与审计
 backend/app/importers.py    微信/支付宝解析与事实归一化
 backend/app/main.py         FastAPI、结构化流水搜索与批量标注 API
+backend/app/settings.py     本地配置初始化、默认值合并与严格校验
+backend/config.default.json 可公开的安全默认配置
 backend/app/models.py       总账、标签树、规则、分配和审计模型
 frontend/src/App.tsx        看板、独立标注工作台、标签与规则管理
 frontend/src/transactionFilters.ts  16 字段筛选注册表与请求序列化
