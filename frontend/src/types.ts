@@ -1,4 +1,9 @@
 export interface Summary { income: number; expense: number; net: number }
+export type DashboardGranularity = 'day' | 'week' | 'month'
+export type DashboardRange =
+  | { mode: 'month'; month: string }
+  | { mode: 'year'; year: number }
+  | { mode: 'custom'; startDate: string; endDate: string }
 export interface TrendPoint { date: string; income: number; expense: number }
 export interface DistributionItem { name: string; value: number }
 export interface DashboardDistribution { dimensionId: string; key: string; name: string; items: DistributionItem[] }

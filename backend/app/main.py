@@ -6,7 +6,7 @@ import uuid
 from collections import defaultdict
 from collections.abc import AsyncIterator, Generator
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Literal
@@ -137,6 +137,42 @@ def _month_bounds(month: str | None) -> tuple[datetime | None, datetime | None]:
     return start, end
 
 
+def _dashboard_bounds(
+    month: str | None,
+    year: int | None,
+    start_date: str | None,
+    end_date: str | None,
+) -> tuple[datetime | None, datetime | None]:
+    custom_range_requested = start_date is not None or end_date is not None
+    selected_ranges = sum((month is not None, year is not None, custom_range_requested))
+    if selected_ranges > 1:
+        raise HTTPException(status_code=422, detail="month、year 和自定义日期范围只能选择一种")
+    if custom_range_requested:
+        if start_date is None or end_date is None:
+            raise HTTPException(status_code=422, detail="start_date 和 end_date 必须同时提供")
+        try:
+            start = datetime.strptime(start_date, "%Y-%m-%d")
+            inclusive_end = datetime.strptime(end_date, "%Y-%m-%d")
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="start_date 和 end_date 必须是 YYYY-MM-DD") from exc
+        if start > inclusive_end:
+            raise HTTPException(status_code=422, detail="start_date 不能晚于 end_date")
+        return start, inclusive_end + timedelta(days=1)
+    if year is not None:
+        if year < 1900 or year > 2100:
+            raise HTTPException(status_code=422, detail="year 必须在 1900 到 2100 之间")
+        return datetime(year, 1, 1), datetime(year + 1, 1, 1)
+    return _month_bounds(month)
+
+
+def _trend_bucket(value: datetime, granularity: Literal["day", "week", "month"]) -> str:
+    if granularity == "week":
+        return (value.date() - timedelta(days=value.weekday())).isoformat()
+    if granularity == "month":
+        return value.date().replace(day=1).isoformat()
+    return value.date().isoformat()
+
+
 def _label_name(effective: dict[str, list[dict]], key: str, fallback: str) -> tuple[str, str]:
     labels = effective.get(key, [])
     return (" / ".join(item["name"] for item in labels), labels[0]["source"]) if labels else (fallback, "unassigned")
@@ -212,7 +248,7 @@ def create_app(*, database_url: str | None = None, data_root: str | Path | None 
         yield
         engine.dispose()
 
-    application = FastAPI(title="Ledger Pilot API", version="1.4.1", lifespan=lifespan)
+    application = FastAPI(title="Ledger Pilot API", version="1.5.0", lifespan=lifespan)
     application.state.engine = engine
     application.state.data_root = resolved_data_root
     origins = [item.strip() for item in os.getenv(
@@ -471,8 +507,16 @@ def create_app(*, database_url: str | None = None, data_root: str | Path | None 
         if start and end: statement = statement.where(and_(Transaction.transaction_time >= start, Transaction.transaction_time < end))
         return list(session.scalars(statement))
 
-    def dashboard_payload(month: str | None, session: Session) -> dict[str, object]:
-        rows = filtered_transactions(month, session)
+    def dashboard_payload(
+        start: datetime | None,
+        end: datetime | None,
+        trend_granularity: Literal["day", "week", "month"],
+        session: Session,
+    ) -> dict[str, object]:
+        statement = select(Transaction).order_by(Transaction.transaction_time.desc(), Transaction.id.desc())
+        if start is not None and end is not None:
+            statement = statement.where(and_(Transaction.transaction_time >= start, Transaction.transaction_time < end))
+        rows = list(session.scalars(statement))
         dimensions = list(session.scalars(
             select(LabelDimension).where(LabelDimension.enabled.is_(True))
             .order_by(LabelDimension.sort_order, LabelDimension.name)
@@ -487,7 +531,7 @@ def create_app(*, database_url: str | None = None, data_root: str | Path | None 
         for row in rows:
             item = _transaction_item(session, row); items.append(item)
             amount = _money(row.amount)
-            trend[row.transaction_time.date().isoformat()][_direction(row.direction)] += amount
+            trend[_trend_bucket(row.transaction_time, trend_granularity)][_direction(row.direction)] += amount
             if row.direction == "支出":
                 categories[str(item["category"])] += amount; channels[str(item["channel"])] += amount
             effective_labels = item["effectiveLabels"]
@@ -524,8 +568,16 @@ def create_app(*, database_url: str | None = None, data_root: str | Path | None 
         }
 
     @application.get("/api/dashboard")
-    def dashboard(month: str | None = None, session: Session = Depends(session_dependency)) -> dict[str, object]:
-        return dashboard_payload(month, session)
+    def dashboard(
+        month: str | None = None,
+        year: int | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        trend_granularity: Literal["day", "week", "month"] = "day",
+        session: Session = Depends(session_dependency),
+    ) -> dict[str, object]:
+        start, end = _dashboard_bounds(month, year, start_date, end_date)
+        return dashboard_payload(start, end, trend_granularity, session)
 
     @application.get("/api/heatmaps")
     def heatmaps(

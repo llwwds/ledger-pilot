@@ -5,12 +5,13 @@ import {
   getAnnotation, getDashboard, getHeatmaps, getLabelCatalog, getRules, getTransactions, importStatements,
   saveAnnotation, saveBatchAnnotations, updateDimension, updateLabel, updateRule,
 } from './api'
-import type { AnnotationData, DashboardData, DistributionItem, HeatmapData, HeatmapPoint, LabelDimension, LabelNode, ManualTransactionInput, MerchantRule, Transaction } from './types'
+import type { AnnotationData, DashboardData, DashboardGranularity, DashboardRange, DistributionItem, HeatmapData, HeatmapPoint, LabelDimension, LabelNode, ManualTransactionInput, MerchantRule, Transaction } from './types'
 
 const money = new Intl.NumberFormat('zh-CN', { style: 'currency', currency: 'CNY' })
 const compactMoney = new Intl.NumberFormat('zh-CN', { notation: 'compact', maximumFractionDigits: 1 })
 type View = 'dashboard' | 'annotations' | 'labels' | 'rules'
 type Theme = 'ledger' | 'glass'
+type DashboardMode = DashboardRange['mode']
 const THEME_STORAGE_KEY = 'ledger-pilot-theme'
 const THEME_CHARTS: Record<Theme, { pie: string[]; grid: string; expense: string; expenseFill: string; income: string }> = {
   ledger: { pie: ['#213640', '#5e7c88', '#94a9ad', '#d29a66', '#c75d50', '#7f6f8d'], grid: '#d5dde0', expense: '#c75d50', expenseFill: '#c75d5022', income: '#526d7b' },
@@ -18,6 +19,8 @@ const THEME_CHARTS: Record<Theme, { pie: string[]; grid: string; expense: string
 }
 
 function currentMonth() { const now = new Date(); return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}` }
+function localDate(value = new Date()) { const date = new Date(value); date.setMinutes(date.getMinutes() - date.getTimezoneOffset()); return date.toISOString().slice(0, 10) }
+function monthStart(value: string) { return `${value}-01` }
 function shiftMonth(value: string, offset: number) { const [year, month] = value.split('-').map(Number); const date = new Date(year, month - 1 + offset, 1); return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}` }
 function monthName(value: string) { const [year, month] = value.split('-'); return `${year} 年 ${Number(month)} 月` }
 function localDateTime() { const date = new Date(); date.setMinutes(date.getMinutes() - date.getTimezoneOffset()); return date.toISOString().slice(0, 19) }
@@ -26,6 +29,13 @@ function App() {
   const [view, setView] = useState<View>('dashboard')
   const [theme, setTheme] = useState<Theme>(() => window.localStorage.getItem(THEME_STORAGE_KEY) === 'glass' ? 'glass' : 'ledger')
   const [month, setMonth] = useState(currentMonth)
+  const [dashboardMode, setDashboardMode] = useState<DashboardMode>('month')
+  const [dashboardYear, setDashboardYear] = useState(new Date().getFullYear())
+  const [customStart, setCustomStart] = useState(monthStart(currentMonth()))
+  const [customEnd, setCustomEnd] = useState(localDate)
+  const [rangeGranularity, setRangeGranularity] = useState<DashboardGranularity>('day')
+  const [trendGranularity, setTrendGranularity] = useState<DashboardGranularity>('day')
+  const [calendarYear, setCalendarYear] = useState(new Date().getFullYear())
   const [data, setData] = useState<DashboardData | null>(null)
   const [heatmaps, setHeatmaps] = useState<HeatmapData | null>(null)
   const [heatmapLoading, setHeatmapLoading] = useState(true)
@@ -49,6 +59,7 @@ function App() {
   const [query, setQuery] = useState('')
   const fileRef = useRef<HTMLInputElement>(null)
   const heatmapRequestId = useRef(0)
+  const dashboardRequestId = useRef(0)
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme
@@ -58,7 +69,12 @@ function App() {
   const report = useCallback((reason: unknown) => setError(reason instanceof Error ? reason.message : '操作未完成'), [])
   const loadCatalog = useCallback(async () => setCatalog(await getLabelCatalog()), [])
   const loadRules = useCallback(async () => setRules(await getRules()), [])
-  const heatmapYear = Number(month.slice(0, 4))
+  const dashboardRange = useMemo<DashboardRange>(() => dashboardMode === 'month'
+    ? { mode: 'month', month }
+    : dashboardMode === 'year'
+      ? { mode: 'year', year: dashboardYear }
+      : { mode: 'custom', startDate: customStart, endDate: customEnd }, [customEnd, customStart, dashboardMode, dashboardYear, month])
+  const heatmapYear = dashboardMode === 'month' ? Number(month.slice(0, 4)) : dashboardMode === 'year' ? dashboardYear : calendarYear
   const loadHeatmaps = useCallback(async () => {
     const requestId = ++heatmapRequestId.current
     setHeatmapLoading(true)
@@ -76,11 +92,12 @@ function App() {
     }
   }, [heatmapYear])
   const loadDashboard = useCallback(async () => {
+    const requestId = ++dashboardRequestId.current
     setLoading(true); setError('')
-    try { setData(await getDashboard(month)) }
-    catch (reason) { report(reason); setData(null) }
-    finally { setLoading(false) }
-  }, [month, report])
+    try { const result = await getDashboard(dashboardRange, trendGranularity); if (requestId === dashboardRequestId.current) setData(result) }
+    catch (reason) { if (requestId === dashboardRequestId.current) { report(reason); setData(null) } }
+    finally { if (requestId === dashboardRequestId.current) setLoading(false) }
+  }, [dashboardRange, report, trendGranularity])
 
   const loadAnnotationQueue = useCallback(async () => {
     setAnnotationLoading(true); setError('')
@@ -129,14 +146,14 @@ function App() {
     setManualEntryOpen(false)
     setNotice('手动流水已记录，并保留原始快照与审计日志。')
     const savedMonth = transaction.date.slice(0, 7)
-    if (savedMonth === month) await Promise.all([loadDashboard(), loadHeatmaps()]); else setMonth(savedMonth)
+    if (dashboardMode !== 'month' || savedMonth === month) await Promise.all([loadDashboard(), loadHeatmaps()]); else setMonth(savedMonth)
   }
 
   return <main>
     <header className="masthead">
       <button className="brand" onClick={() => setView('dashboard')} aria-label="Ledger Pilot 首页"><span className="brand-mark">LP</span><span><b>Ledger Pilot</b><small>本地账本工作台</small></span></button>
       <nav className="main-nav" aria-label="主导航">
-        <button className={view === 'dashboard' ? 'active' : ''} onClick={() => setView('dashboard')}>月度看板</button>
+        <button className={view === 'dashboard' ? 'active' : ''} onClick={() => setView('dashboard')}>总看板</button>
         <button className={view === 'annotations' ? 'active' : ''} onClick={() => setView('annotations')}>流水标注</button>
         <button className={view === 'labels' ? 'active' : ''} onClick={() => setView('labels')}>标签管理</button>
         <button className={view === 'rules' ? 'active' : ''} onClick={() => setView('rules')}>预填规则</button>
@@ -152,7 +169,11 @@ function App() {
 
     <input ref={fileRef} className="sr-only" type="file" multiple accept=".csv,.xlsx,.zip" onChange={(event) => { const files = [...(event.target.files ?? [])]; if (files.some((file) => file.name.toLowerCase().endsWith('.zip'))) setPendingArchives(files); else void handleImport(files) }} />
     {view === 'dashboard' && <Dashboard
-      theme={theme} month={month} setMonth={setMonth} data={data} heatmaps={heatmaps} heatmapLoading={heatmapLoading} heatmapError={heatmapError} loading={loading}
+      theme={theme} month={month} setMonth={setMonth} mode={dashboardMode} setMode={setDashboardMode}
+      year={dashboardYear} setYear={setDashboardYear} customStart={customStart} setCustomStart={setCustomStart}
+      customEnd={customEnd} setCustomEnd={setCustomEnd} rangeGranularity={rangeGranularity} setRangeGranularity={setRangeGranularity}
+      trendGranularity={trendGranularity} setTrendGranularity={setTrendGranularity} calendarYear={calendarYear} setCalendarYear={setCalendarYear}
+      data={data} heatmaps={heatmaps} heatmapLoading={heatmapLoading} heatmapError={heatmapError} loading={loading}
       busy={busy} onPickFiles={() => fileRef.current?.click()} onManualEntry={() => setManualEntryOpen(true)}
     />}
     {view === 'annotations' && <AnnotationQueuePage
@@ -183,7 +204,7 @@ function App() {
       onSubmit={(password) => { const files = pendingArchives; setPendingArchives([]); void handleImport(files, password) }}
     />}
     {manualEntryOpen && <ManualEntryDialog catalog={catalog} onClose={() => setManualEntryOpen(false)} onSaved={handleManualSaved} report={report} />}
-    <footer><span>LEDGER PILOT / V1.4.1</span><p>规则给建议，最终选择由你确认；原始流水永不被标注修改。</p></footer>
+    <footer><span>LEDGER PILOT / V1.5.0</span><p>规则给建议，最终选择由你确认；原始流水永不被标注修改。</p></footer>
   </main>
 }
 
@@ -214,25 +235,95 @@ function ArchivePasswordDialog({ fileCount, onClose, onSubmit }: { fileCount: nu
 
 function Dashboard(props: {
   theme: Theme
-  month: string; setMonth: (value: string) => void; data: DashboardData | null; heatmaps: HeatmapData | null; heatmapLoading: boolean; heatmapError: string; loading: boolean
+  month: string; setMonth: (value: string) => void; mode: DashboardMode; setMode: (value: DashboardMode) => void
+  year: number; setYear: (value: number) => void; customStart: string; setCustomStart: (value: string) => void; customEnd: string; setCustomEnd: (value: string) => void
+  rangeGranularity: DashboardGranularity; setRangeGranularity: (value: DashboardGranularity) => void
+  trendGranularity: DashboardGranularity; setTrendGranularity: (value: DashboardGranularity) => void
+  calendarYear: number; setCalendarYear: (value: number) => void
+  data: DashboardData | null; heatmaps: HeatmapData | null; heatmapLoading: boolean; heatmapError: string; loading: boolean
   busy: boolean; onPickFiles: () => void; onManualEntry: () => void
 }) {
-  const { month, data, theme } = props
+  const { month, data, theme, mode } = props
   const chartColors = THEME_CHARTS[theme]
   const summary = data?.summary ?? { income: 0, expense: 0, net: 0 }
+  const rangeTitle = mode === 'month' ? monthName(month) : mode === 'year' ? `${props.year} 年` : `${props.customStart} 至 ${props.customEnd}`
+  const rangeMeta = mode === 'month' ? month.replace('-', '.') : mode === 'year' ? String(props.year) : `${props.customStart.replaceAll('-', '.')}—${props.customEnd.replaceAll('-', '.')}`
+  const heatmapYear = mode === 'month' ? Number(month.slice(0, 4)) : mode === 'year' ? props.year : props.calendarYear
+  const granularityName = { day: '日', week: '周', month: '月' }[props.trendGranularity]
   const distributions = data?.distributions ?? (data ? [
     { dimensionId: 'legacy-expense-category', key: 'expense_category', name: '支出分类', items: data.categories },
     { dimensionId: 'legacy-payment-channel', key: 'payment_channel', name: '支付渠道', items: data.channels },
   ] : [])
   return <>
-    <MonthRail month={month} setMonth={props.setMonth} />
-    <section className="page-heading"><div><p className="eyebrow">MONTHLY REVIEW / {month.replace('-', '.')}</p><h1>{monthName(month)}，逐笔把钱说清楚</h1><p>规则先填建议，你在流水里确认；看板始终标明结论来自人工还是规则。</p></div><div className="actions"><button className="button secondary" onClick={props.onManualEntry}>手动记账</button><button className="button primary" onClick={props.onPickFiles} disabled={props.busy}>{props.busy ? '正在合并…' : '导入账单'}</button></div></section>
+    <DashboardRangeNav mode={mode} setMode={props.setMode} />
+    {mode === 'month' && <MonthRail month={month} setMonth={props.setMonth} />}
+    {mode === 'year' && <YearRail year={props.year} setYear={props.setYear} />}
+    {mode === 'custom' && <CustomRangePanel {...props} />}
+    <section className="page-heading"><div><p className="eyebrow">LEDGER REVIEW / {rangeMeta}</p><h1>{rangeTitle}，逐笔把钱说清楚</h1><p>看板范围与曲线颗粒度彼此独立；规则给出建议，最终结果仍由你确认。</p></div><div className="actions"><button className="button secondary" onClick={props.onManualEntry}>手动记账</button><button className="button primary" onClick={props.onPickFiles} disabled={props.busy}>{props.busy ? '正在合并…' : '导入账单'}</button></div></section>
     {props.loading ? <DashboardSkeleton /> : data ? <>
-      <section className="summary-strip"><article className="hero-amount"><p>本月支出</p><strong>{money.format(summary.expense)}</strong><span>共计流出</span></article><article><p>本月收入</p><strong>{money.format(summary.income)}</strong><span>已入账</span></article><article><p>收支净额</p><strong className={summary.net < 0 ? 'negative' : ''}>{summary.net >= 0 ? '+' : ''}{money.format(summary.net)}</strong><span>{summary.net >= 0 ? '本月有结余' : '支出高于收入'}</span></article></section>
-      <section className="analysis-stack"><article className="panel trend-panel"><PanelHeading index="A" title="日收支轨迹" meta={`${data.trend.length} 个记账日`} />{data.trend.length ? <div className="chart-wrap"><ResponsiveContainer width="100%" height="100%"><AreaChart data={data.trend} margin={{ top: 10, right: 4, left: -20, bottom: 0 }}><CartesianGrid stroke={chartColors.grid} strokeDasharray="2 5" vertical={false} /><XAxis dataKey="date" tickLine={false} axisLine={false} tick={{ fontSize: 11 }} tickFormatter={(value: string) => value.slice(-2)} /><YAxis tickLine={false} axisLine={false} tick={{ fontSize: 10 }} tickFormatter={(value: number) => compactMoney.format(value)} /><Tooltip formatter={(value) => money.format(Number(value))} /><Area type="monotone" dataKey="expense" name="支出" stroke={chartColors.expense} fill={chartColors.expenseFill} /><Area type="monotone" dataKey="income" name="收入" stroke={chartColors.income} fill="transparent" /></AreaChart></ResponsiveContainer></div> : <EmptyState text="这个月还没有收支轨迹" />}</article><div className="distribution-grid">{distributions.map((distribution, index) => <DistributionPanel key={distribution.dimensionId} index={panelIndex(index + 1)} title={distribution.name} items={distribution.items} colors={chartColors.pie} />)}</div></section>
-      <AnnualHeatmaps data={props.heatmaps} year={Number(month.slice(0, 4))} loading={props.heatmapLoading} error={props.heatmapError} />
-    </> : <EmptyState text="账本暂时没有这个月的数据，请先导入账单" />}
+      <section className="summary-strip"><article className="hero-amount"><p>范围支出</p><strong>{money.format(summary.expense)}</strong><span>共计流出</span></article><article><p>范围收入</p><strong>{money.format(summary.income)}</strong><span>已入账</span></article><article><p>收支净额</p><strong className={summary.net < 0 ? 'negative' : ''}>{summary.net >= 0 ? '+' : ''}{money.format(summary.net)}</strong><span>{summary.net >= 0 ? '范围内有结余' : '支出高于收入'}</span></article></section>
+      <section className="analysis-stack"><article className="panel trend-panel"><div className="trend-heading"><PanelHeading index="A" title={`${granularityName}收支轨迹`} meta={`${data.trend.length} 个数据点`} /><GranularitySwitch value={props.trendGranularity} onChange={props.setTrendGranularity} label="曲线颗粒度" /></div>{data.trend.length ? <div className="chart-wrap"><ResponsiveContainer width="100%" height="100%"><AreaChart data={data.trend} margin={{ top: 10, right: 4, left: -20, bottom: 0 }}><CartesianGrid stroke={chartColors.grid} strokeDasharray="2 5" vertical={false} /><XAxis dataKey="date" tickLine={false} axisLine={false} tick={{ fontSize: 11 }} tickFormatter={(value: string) => props.trendGranularity === 'month' ? value.slice(5) : value.slice(5)} /><YAxis tickLine={false} axisLine={false} tick={{ fontSize: 10 }} tickFormatter={(value: number) => compactMoney.format(value)} /><Tooltip formatter={(value) => money.format(Number(value))} /><Area type="monotone" dataKey="expense" name="支出" stroke={chartColors.expense} fill={chartColors.expenseFill} /><Area type="monotone" dataKey="income" name="收入" stroke={chartColors.income} fill="transparent" /></AreaChart></ResponsiveContainer></div> : <EmptyState text="当前范围还没有收支轨迹" />}</article><div className="distribution-grid">{distributions.map((distribution, index) => <DistributionPanel key={distribution.dimensionId} index={panelIndex(index + 1)} title={distribution.name} items={distribution.items} colors={chartColors.pie} />)}</div></section>
+      <AnnualHeatmaps data={props.heatmaps} year={heatmapYear} loading={props.heatmapLoading} error={props.heatmapError} />
+    </> : <EmptyState text="账本暂时没有当前范围的数据，请先导入账单" />}
   </>
+}
+
+function DashboardRangeNav({ mode, setMode }: { mode: DashboardMode; setMode: (value: DashboardMode) => void }) {
+  return <section className="dashboard-range-nav" aria-label="看板时间范围">{([['year', '年度'], ['month', '月度'], ['custom', '自定义']] as const).map(([value, label]) => <button key={value} className={mode === value ? 'active' : ''} aria-pressed={mode === value} onClick={() => setMode(value)}>{label}</button>)}</section>
+}
+
+function YearRail({ year, setYear }: { year: number; setYear: (value: number) => void }) {
+  return <section className="year-rail" aria-label="年度选择"><button className="rail-arrow" onClick={() => setYear(year - 1)} aria-label="上一年">←</button><div><span>ANNUAL REVIEW</span><strong>{year}</strong></div><button className="rail-arrow" onClick={() => setYear(year + 1)} aria-label="下一年">→</button></section>
+}
+
+function GranularitySwitch({ value, onChange, label }: { value: DashboardGranularity; onChange: (value: DashboardGranularity) => void; label: string }) {
+  return <div className="granularity-switch" role="group" aria-label={label}>{([['day', '日'], ['week', '周'], ['month', '月']] as const).map(([item, text]) => <button key={item} type="button" aria-pressed={value === item} onClick={() => onChange(item)}>{text}</button>)}</div>
+}
+
+function CustomRangePanel(props: {
+  customStart: string; setCustomStart: (value: string) => void; customEnd: string; setCustomEnd: (value: string) => void
+  rangeGranularity: DashboardGranularity; setRangeGranularity: (value: DashboardGranularity) => void
+  calendarYear: number; setCalendarYear: (value: number) => void
+}) {
+  const updateStart = (value: string) => { props.setCustomStart(value); if (value > props.customEnd) props.setCustomEnd(value) }
+  const updateEnd = (value: string) => { props.setCustomEnd(value); if (value < props.customStart) props.setCustomStart(value) }
+  return <section className="custom-range-panel"><header><div><p className="eyebrow">CUSTOM RANGE</p><h2>选择要复盘的时间边界</h2><p>可以直接输入日期，也可以在下方日历点选开始与结束；选择周或月时会自动吸附完整周期。</p></div><GranularitySwitch value={props.rangeGranularity} onChange={props.setRangeGranularity} label="范围选择颗粒度" /></header><div className="custom-range-inputs"><label>开始日期<input type="date" value={props.customStart} max={props.customEnd} onChange={(event) => updateStart(event.target.value)} /></label><span>→</span><label>结束日期<input type="date" value={props.customEnd} min={props.customStart} onChange={(event) => updateEnd(event.target.value)} /></label></div><DateRangeCalendar {...props} /></section>
+}
+
+function dateKey(date: Date) { return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}` }
+function parseDate(value: string) { return new Date(`${value}T12:00:00`) }
+function snapDate(value: string, granularity: DashboardGranularity): [string, string] {
+  const date = parseDate(value)
+  if (granularity === 'week') {
+    const offset = (date.getDay() + 6) % 7
+    const start = new Date(date); start.setDate(start.getDate() - offset)
+    const end = new Date(start); end.setDate(end.getDate() + 6)
+    return [dateKey(start), dateKey(end)]
+  }
+  if (granularity === 'month') return [`${value.slice(0, 7)}-01`, dateKey(new Date(date.getFullYear(), date.getMonth() + 1, 0))]
+  return [value, value]
+}
+
+function DateRangeCalendar(props: {
+  customStart: string; setCustomStart: (value: string) => void; customEnd: string; setCustomEnd: (value: string) => void
+  rangeGranularity: DashboardGranularity; calendarYear: number; setCalendarYear: (value: number) => void
+}) {
+  const [anchor, setAnchor] = useState<string | null>(null)
+  const first = new Date(props.calendarYear, 0, 1)
+  const blanks = Array.from({ length: (first.getDay() + 6) % 7 }, (_, index) => index)
+  const days: string[] = []
+  for (const date = new Date(first); date.getFullYear() === props.calendarYear; date.setDate(date.getDate() + 1)) days.push(dateKey(date))
+  function choose(value: string) {
+    const [unitStart, unitEnd] = snapDate(value, props.rangeGranularity)
+    if (!anchor) {
+      props.setCustomStart(unitStart); props.setCustomEnd(unitEnd); setAnchor(unitStart); return
+    }
+    const [anchorStart, anchorEnd] = snapDate(anchor, props.rangeGranularity)
+    props.setCustomStart(anchorStart < unitStart ? anchorStart : unitStart)
+    props.setCustomEnd(anchorEnd > unitEnd ? anchorEnd : unitEnd)
+    setAnchor(null)
+  }
+  return <div className="range-calendar"><div className="range-calendar-head"><button type="button" onClick={() => props.setCalendarYear(props.calendarYear - 1)} aria-label="查看上一年">←</button><strong>{props.calendarYear} 年日历</strong><button type="button" onClick={() => props.setCalendarYear(props.calendarYear + 1)} aria-label="查看下一年">→</button></div><div className="range-month-labels">{Array.from({ length: 12 }, (_, index) => <span key={index}>{index + 1}月</span>)}</div><div className="range-calendar-layout"><div className="weekday-labels"><span>一</span><span>三</span><span>五</span><span>日</span></div><div className="range-calendar-cells">{blanks.map((item) => <i key={`blank-${item}`} />)}{days.map((day) => <button type="button" key={day} aria-label={`选择 ${day}`} title={day} className={`${day >= props.customStart && day <= props.customEnd ? 'in-range ' : ''}${day === props.customStart || day === props.customEnd ? 'boundary' : ''}`} onClick={() => choose(day)} />)}</div></div><p>{anchor ? '请选择结束周期' : '点击任意日期开始新范围，再点击一次确定结束范围'}</p></div>
 }
 
 function MonthRail({ month, setMonth }: { month: string; setMonth: (value: string) => void }) {

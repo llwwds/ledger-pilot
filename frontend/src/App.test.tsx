@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 
@@ -37,6 +37,34 @@ describe('App', () => {
     expect(screen.getByText('赚钱的热力图')).toBeInTheDocument()
     expect(screen.getByLabelText('2026-01-01，¥180.32，8 笔')).toHaveClass('level-4')
     expect(screen.getByLabelText('2026-01-01，¥2,079.96，21 笔')).toHaveClass('level-4')
+  })
+
+  it('按年度、月度和自定义范围读取总看板，曲线粒度保持正交', async () => {
+    const requests: string[] = []
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((input: string) => {
+      const url = String(input); requests.push(url)
+      if (url.includes('/api/label-catalog') || url.endsWith('/api/rules')) return response([])
+      if (url.includes('/api/heatmaps')) return response({ year: 2026, expense: [], income: [] })
+      return response({ summary: { income: 0, expense: 0, net: 0 }, trend: [], categories: [], channels: [], distributions: [], recent: [] })
+    }))
+
+    render(<App />)
+    await waitFor(() => expect(requests.some((url) => url.includes('/api/dashboard?') && url.includes('month=') && url.includes('trend_granularity=day'))).toBe(true))
+
+    fireEvent.click(screen.getByRole('button', { name: '年度' }))
+    await waitFor(() => expect(requests.some((url) => url.includes('year=2026') && url.includes('trend_granularity=day'))).toBe(true))
+    fireEvent.click(within(screen.getByRole('group', { name: '曲线颗粒度' })).getByRole('button', { name: '月' }))
+    await waitFor(() => expect(requests.some((url) => url.includes('year=2026') && url.includes('trend_granularity=month'))).toBe(true))
+
+    fireEvent.click(screen.getByRole('button', { name: '自定义' }))
+    const rangeGroup = screen.getByRole('group', { name: '范围选择颗粒度' })
+    fireEvent.click(within(rangeGroup).getByRole('button', { name: '周' }))
+    fireEvent.click(screen.getByRole('button', { name: '选择 2026-03-04' }))
+    fireEvent.click(screen.getByRole('button', { name: '选择 2026-03-10' }))
+
+    expect(screen.getByLabelText('开始日期')).toHaveValue('2026-03-02')
+    expect(screen.getByLabelText('结束日期')).toHaveValue('2026-03-15')
+    await waitFor(() => expect(requests.some((url) => url.includes('start_date=2026-03-02') && url.includes('end_date=2026-03-15') && url.includes('trend_granularity=month'))).toBe(true))
   })
 
   it('打开手动记账弹窗并展示防重复流水号', async () => {

@@ -21,6 +21,26 @@ def _import_wechat(client: TestClient) -> dict:
     return response.json()
 
 
+def _manual_transaction(
+    client: TestClient,
+    transaction_time: str,
+    direction: str,
+    amount: str,
+    reference_id: str,
+) -> None:
+    response = client.post("/api/transactions/manual", json={
+        "transaction_time": transaction_time,
+        "direction": direction,
+        "amount": amount,
+        "counterparty": f"范围测试-{reference_id}",
+        "summary": f"范围测试-{reference_id}",
+        "category": "测试分类",
+        "payment_channel": "测试渠道",
+        "reference_id": reference_id,
+    })
+    assert response.status_code == 201, response.text
+
+
 def test_import_preserves_each_batch_and_merges_idempotently(client: TestClient) -> None:
     first = _import_wechat(client)
     second = _import_wechat(client)
@@ -342,3 +362,68 @@ def test_annual_heatmaps_are_additive_and_direction_specific(client: TestClient)
     assert income["2026-07-31"] == {"date": "2026-07-31", "value": 6.0, "count": 1}
     assert client.get("/api/dashboard", params={"month": "2026-07"}).status_code == 200
     assert client.get("/api/heatmaps", params={"year": 1899}).status_code == 422
+
+
+def test_dashboard_supports_month_year_and_inclusive_custom_ranges(client: TestClient) -> None:
+    transactions = [
+        ("2025-12-31T12:00:00", "收入", "100.00", "range-2025"),
+        ("2026-01-01T12:00:00", "收入", "10.00", "range-jan-1"),
+        ("2026-01-04T12:00:00", "支出", "4.00", "range-jan-4"),
+        ("2026-01-05T12:00:00", "支出", "5.00", "range-jan-5"),
+        ("2026-02-01T12:00:00", "收入", "20.00", "range-feb-1"),
+        ("2027-01-01T12:00:00", "支出", "7.00", "range-2027"),
+    ]
+    for transaction in transactions:
+        _manual_transaction(client, *transaction)
+
+    monthly = client.get("/api/dashboard", params={"month": "2026-01"})
+    assert monthly.status_code == 200, monthly.text
+    monthly_payload = monthly.json()
+    assert monthly_payload["summary"] == {"income": 10.0, "expense": 9.0, "net": 1.0}
+    assert [item["date"] for item in monthly_payload["trend"]] == ["2026-01-01", "2026-01-04", "2026-01-05"]
+    assert len(monthly_payload["recent"]) == 3
+    assert sum(item["value"] for item in monthly_payload["channels"]) == 9.0
+
+    annual = client.get("/api/dashboard", params={"year": 2026, "trend_granularity": "month"})
+    assert annual.status_code == 200, annual.text
+    annual_payload = annual.json()
+    assert annual_payload["summary"] == {"income": 30.0, "expense": 9.0, "net": 21.0}
+    assert annual_payload["trend"] == [
+        {"date": "2026-01-01", "income": 10.0, "expense": 9.0},
+        {"date": "2026-02-01", "income": 20.0, "expense": 0},
+    ]
+    income_distribution = next(item for item in annual_payload["distributions"] if item["key"] == "income_category")
+    assert sum(item["value"] for item in income_distribution["items"]) == 30.0
+    assert len(annual_payload["recent"]) == 4
+
+    custom = client.get("/api/dashboard", params={
+        "start_date": "2026-01-04", "end_date": "2026-02-01", "trend_granularity": "week",
+    })
+    assert custom.status_code == 200, custom.text
+    custom_payload = custom.json()
+    assert custom_payload["summary"] == {"income": 20.0, "expense": 9.0, "net": 11.0}
+    assert custom_payload["trend"] == [
+        {"date": "2025-12-29", "income": 0, "expense": 4.0},
+        {"date": "2026-01-05", "income": 0, "expense": 5.0},
+        {"date": "2026-01-26", "income": 20.0, "expense": 0},
+    ]
+    assert {item["date"][:10] for item in custom_payload["recent"]} == {
+        "2026-01-04", "2026-01-05", "2026-02-01",
+    }
+
+
+def test_dashboard_rejects_conflicting_or_invalid_ranges_and_granularity(client: TestClient) -> None:
+    invalid_params = [
+        {"month": "2026-01", "year": 2026},
+        {"year": 2026, "start_date": "2026-01-01", "end_date": "2026-01-31"},
+        {"start_date": "2026-01-01"},
+        {"end_date": "2026-01-31"},
+        {"start_date": "2026/01/01", "end_date": "2026-01-31"},
+        {"start_date": "2026-02-01", "end_date": "2026-01-31"},
+        {"month": "2026-13"},
+        {"year": 1899},
+        {"trend_granularity": "quarter"},
+    ]
+    for params in invalid_params:
+        response = client.get("/api/dashboard", params=params)
+        assert response.status_code == 422, (params, response.text)
