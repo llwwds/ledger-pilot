@@ -59,6 +59,8 @@ describe('App', () => {
     fireEvent.click(screen.getByRole('button', { name: '自定义' }))
     const rangeGroup = screen.getByRole('group', { name: '范围选择颗粒度' })
     fireEvent.click(within(rangeGroup).getByRole('button', { name: '周' }))
+    fireEvent.change(screen.getByLabelText('开始日期'), { target: { value: '2026-02-04' } })
+    expect(screen.getByLabelText('开始日期')).toHaveValue('2026-02-02')
     fireEvent.click(screen.getByRole('button', { name: '选择 2026-03-04' }))
     fireEvent.click(screen.getByRole('button', { name: '选择 2026-03-10' }))
 

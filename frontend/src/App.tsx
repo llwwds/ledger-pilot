@@ -74,7 +74,7 @@ function App() {
     : dashboardMode === 'year'
       ? { mode: 'year', year: dashboardYear }
       : { mode: 'custom', startDate: customStart, endDate: customEnd }, [customEnd, customStart, dashboardMode, dashboardYear, month])
-  const heatmapYear = dashboardMode === 'month' ? Number(month.slice(0, 4)) : dashboardMode === 'year' ? dashboardYear : calendarYear
+  const heatmapYear = dashboardMode === 'month' ? Number(month.slice(0, 4)) : dashboardMode === 'year' ? dashboardYear : Number(customStart.slice(0, 4))
   const loadHeatmaps = useCallback(async () => {
     const requestId = ++heatmapRequestId.current
     setHeatmapLoading(true)
@@ -204,7 +204,7 @@ function App() {
       onSubmit={(password) => { const files = pendingArchives; setPendingArchives([]); void handleImport(files, password) }}
     />}
     {manualEntryOpen && <ManualEntryDialog catalog={catalog} onClose={() => setManualEntryOpen(false)} onSaved={handleManualSaved} report={report} />}
-    <footer><span>LEDGER PILOT / V1.5.0</span><p>规则给建议，最终选择由你确认；原始流水永不被标注修改。</p></footer>
+    <footer><span>LEDGER PILOT / V1.5.1</span><p>规则给建议，最终选择由你确认；原始流水永不被标注修改。</p></footer>
   </main>
 }
 
@@ -248,7 +248,8 @@ function Dashboard(props: {
   const summary = data?.summary ?? { income: 0, expense: 0, net: 0 }
   const rangeTitle = mode === 'month' ? monthName(month) : mode === 'year' ? `${props.year} 年` : `${props.customStart} 至 ${props.customEnd}`
   const rangeMeta = mode === 'month' ? month.replace('-', '.') : mode === 'year' ? String(props.year) : `${props.customStart.replaceAll('-', '.')}—${props.customEnd.replaceAll('-', '.')}`
-  const heatmapYear = mode === 'month' ? Number(month.slice(0, 4)) : mode === 'year' ? props.year : props.calendarYear
+  const heatmapYear = mode === 'month' ? Number(month.slice(0, 4)) : mode === 'year' ? props.year : Number(props.customStart.slice(0, 4))
+  const crossYear = mode === 'custom' && props.customStart.slice(0, 4) !== props.customEnd.slice(0, 4)
   const granularityName = { day: '日', week: '周', month: '月' }[props.trendGranularity]
   const distributions = data?.distributions ?? (data ? [
     { dimensionId: 'legacy-expense-category', key: 'expense_category', name: '支出分类', items: data.categories },
@@ -262,7 +263,7 @@ function Dashboard(props: {
     <section className="page-heading"><div><p className="eyebrow">LEDGER REVIEW / {rangeMeta}</p><h1>{rangeTitle}，逐笔把钱说清楚</h1><p>看板范围与曲线颗粒度彼此独立；规则给出建议，最终结果仍由你确认。</p></div><div className="actions"><button className="button secondary" onClick={props.onManualEntry}>手动记账</button><button className="button primary" onClick={props.onPickFiles} disabled={props.busy}>{props.busy ? '正在合并…' : '导入账单'}</button></div></section>
     {props.loading ? <DashboardSkeleton /> : data ? <>
       <section className="summary-strip"><article className="hero-amount"><p>范围支出</p><strong>{money.format(summary.expense)}</strong><span>共计流出</span></article><article><p>范围收入</p><strong>{money.format(summary.income)}</strong><span>已入账</span></article><article><p>收支净额</p><strong className={summary.net < 0 ? 'negative' : ''}>{summary.net >= 0 ? '+' : ''}{money.format(summary.net)}</strong><span>{summary.net >= 0 ? '范围内有结余' : '支出高于收入'}</span></article></section>
-      <section className="analysis-stack"><article className="panel trend-panel"><div className="trend-heading"><PanelHeading index="A" title={`${granularityName}收支轨迹`} meta={`${data.trend.length} 个数据点`} /><GranularitySwitch value={props.trendGranularity} onChange={props.setTrendGranularity} label="曲线颗粒度" /></div>{data.trend.length ? <div className="chart-wrap"><ResponsiveContainer width="100%" height="100%"><AreaChart data={data.trend} margin={{ top: 10, right: 4, left: -20, bottom: 0 }}><CartesianGrid stroke={chartColors.grid} strokeDasharray="2 5" vertical={false} /><XAxis dataKey="date" tickLine={false} axisLine={false} tick={{ fontSize: 11 }} tickFormatter={(value: string) => props.trendGranularity === 'month' ? value.slice(5) : value.slice(5)} /><YAxis tickLine={false} axisLine={false} tick={{ fontSize: 10 }} tickFormatter={(value: number) => compactMoney.format(value)} /><Tooltip formatter={(value) => money.format(Number(value))} /><Area type="monotone" dataKey="expense" name="支出" stroke={chartColors.expense} fill={chartColors.expenseFill} /><Area type="monotone" dataKey="income" name="收入" stroke={chartColors.income} fill="transparent" /></AreaChart></ResponsiveContainer></div> : <EmptyState text="当前范围还没有收支轨迹" />}</article><div className="distribution-grid">{distributions.map((distribution, index) => <DistributionPanel key={distribution.dimensionId} index={panelIndex(index + 1)} title={distribution.name} items={distribution.items} colors={chartColors.pie} />)}</div></section>
+      <section className="analysis-stack"><article className="panel trend-panel"><div className="trend-heading"><PanelHeading index="A" title={`${granularityName}收支轨迹`} meta={`${data.trend.length} 个数据点`} /><GranularitySwitch value={props.trendGranularity} onChange={props.setTrendGranularity} label="曲线颗粒度" /></div>{data.trend.length ? <div className="chart-wrap"><ResponsiveContainer width="100%" height="100%"><AreaChart data={data.trend} margin={{ top: 10, right: 4, left: -20, bottom: 0 }}><CartesianGrid stroke={chartColors.grid} strokeDasharray="2 5" vertical={false} /><XAxis dataKey="date" tickLine={false} axisLine={false} tick={{ fontSize: 11 }} tickFormatter={(value: string) => crossYear ? (props.trendGranularity === 'month' ? value.slice(0, 7) : value) : value.slice(5)} /><YAxis tickLine={false} axisLine={false} tick={{ fontSize: 10 }} tickFormatter={(value: number) => compactMoney.format(value)} /><Tooltip formatter={(value) => money.format(Number(value))} /><Area type="monotone" dataKey="expense" name="支出" stroke={chartColors.expense} fill={chartColors.expenseFill} /><Area type="monotone" dataKey="income" name="收入" stroke={chartColors.income} fill="transparent" /></AreaChart></ResponsiveContainer></div> : <EmptyState text="当前范围还没有收支轨迹" />}</article><div className="distribution-grid">{distributions.map((distribution, index) => <DistributionPanel key={distribution.dimensionId} index={panelIndex(index + 1)} title={distribution.name} items={distribution.items} colors={chartColors.pie} />)}</div></section>
       <AnnualHeatmaps data={props.heatmaps} year={heatmapYear} loading={props.heatmapLoading} error={props.heatmapError} />
     </> : <EmptyState text="账本暂时没有当前范围的数据，请先导入账单" />}
   </>
@@ -285,9 +286,10 @@ function CustomRangePanel(props: {
   rangeGranularity: DashboardGranularity; setRangeGranularity: (value: DashboardGranularity) => void
   calendarYear: number; setCalendarYear: (value: number) => void
 }) {
-  const updateStart = (value: string) => { props.setCustomStart(value); if (value > props.customEnd) props.setCustomEnd(value) }
-  const updateEnd = (value: string) => { props.setCustomEnd(value); if (value < props.customStart) props.setCustomStart(value) }
-  return <section className="custom-range-panel"><header><div><p className="eyebrow">CUSTOM RANGE</p><h2>选择要复盘的时间边界</h2><p>可以直接输入日期，也可以在下方日历点选开始与结束；选择周或月时会自动吸附完整周期。</p></div><GranularitySwitch value={props.rangeGranularity} onChange={props.setRangeGranularity} label="范围选择颗粒度" /></header><div className="custom-range-inputs"><label>开始日期<input type="date" value={props.customStart} max={props.customEnd} onChange={(event) => updateStart(event.target.value)} /></label><span>→</span><label>结束日期<input type="date" value={props.customEnd} min={props.customStart} onChange={(event) => updateEnd(event.target.value)} /></label></div><DateRangeCalendar {...props} /></section>
+  const updateStart = (value: string) => { const [start, unitEnd] = snapDate(value, props.rangeGranularity); props.setCustomStart(start); props.setCustomEnd(unitEnd > props.customEnd ? unitEnd : props.customEnd); props.setCalendarYear(Number(start.slice(0, 4))) }
+  const updateEnd = (value: string) => { const [unitStart, end] = snapDate(value, props.rangeGranularity); props.setCustomEnd(end); props.setCustomStart(unitStart < props.customStart ? unitStart : props.customStart); props.setCalendarYear(Number(unitStart.slice(0, 4))) }
+  const updateGranularity = (value: DashboardGranularity) => { const [start] = snapDate(props.customStart, value); const [, end] = snapDate(props.customEnd, value); props.setRangeGranularity(value); props.setCustomStart(start); props.setCustomEnd(end) }
+  return <section className="custom-range-panel"><header><div><p className="eyebrow">CUSTOM RANGE</p><h2>选择要复盘的时间边界</h2><p>可以直接输入日期，也可以在下方日历点选开始与结束；选择周或月时会自动吸附完整周期。</p></div><GranularitySwitch value={props.rangeGranularity} onChange={updateGranularity} label="范围选择颗粒度" /></header><div className="custom-range-inputs"><label>开始日期<input type="date" min="1900-01-01" max={props.customEnd} value={props.customStart} onChange={(event) => updateStart(event.target.value)} /></label><span>→</span><label>结束日期<input type="date" min={props.customStart} max="2100-12-31" value={props.customEnd} onChange={(event) => updateEnd(event.target.value)} /></label></div><DateRangeCalendar {...props} /></section>
 }
 
 function dateKey(date: Date) { return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}` }

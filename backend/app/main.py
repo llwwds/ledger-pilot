@@ -155,6 +155,8 @@ def _dashboard_bounds(
             inclusive_end = datetime.strptime(end_date, "%Y-%m-%d")
         except ValueError as exc:
             raise HTTPException(status_code=422, detail="start_date 和 end_date 必须是 YYYY-MM-DD") from exc
+        if start.year < 1900 or inclusive_end.year > 2100:
+            raise HTTPException(status_code=422, detail="自定义日期范围必须在 1900-01-01 到 2100-12-31 之间")
         if start > inclusive_end:
             raise HTTPException(status_code=422, detail="start_date 不能晚于 end_date")
         return start, inclusive_end + timedelta(days=1)
@@ -248,7 +250,7 @@ def create_app(*, database_url: str | None = None, data_root: str | Path | None 
         yield
         engine.dispose()
 
-    application = FastAPI(title="Ledger Pilot API", version="1.5.0", lifespan=lifespan)
+    application = FastAPI(title="Ledger Pilot API", version="1.5.1", lifespan=lifespan)
     application.state.engine = engine
     application.state.data_root = resolved_data_root
     origins = [item.strip() for item in os.getenv(

@@ -420,6 +420,8 @@ def test_dashboard_rejects_conflicting_or_invalid_ranges_and_granularity(client:
         {"end_date": "2026-01-31"},
         {"start_date": "2026/01/01", "end_date": "2026-01-31"},
         {"start_date": "2026-02-01", "end_date": "2026-01-31"},
+        {"start_date": "9999-12-31", "end_date": "9999-12-31"},
+        {"start_date": "1899-12-31", "end_date": "1900-01-01"},
         {"month": "2026-13"},
         {"year": 1899},
         {"trend_granularity": "quarter"},

@@ -96,10 +96,10 @@ main { width: min(1500px, 100%); min-height: 100vh; margin: 0 auto; padding: 0 c
 .range-calendar-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
 .range-calendar-head button { width: 30px; height: 30px; border: 1px solid var(--line); background: transparent; cursor: pointer; }
 .range-calendar-head strong { font: 500 15px Georgia, "Songti SC", serif; }
-.range-month-labels { display: grid; grid-template-columns: repeat(12, 1fr); width: 742px; margin: 0 0 7px 23px; color: var(--ink-soft); font: 8px "SFMono-Regular", Consolas, monospace; }
-.range-calendar-layout { display: flex; gap: 7px; width: 765px; }
-.range-calendar-cells { display: grid; grid-template-rows: repeat(7, 11px); grid-auto-flow: column; grid-auto-columns: 11px; gap: 3px; }
-.range-calendar-cells i, .range-calendar-cells button { width: 11px; height: 11px; padding: 0; border: 1px solid rgba(41,59,71,.1); background: rgba(41,59,71,.055); }
+.range-month-labels { display: grid; grid-template-columns: repeat(12, 1fr); width: 1215px; margin: 0 0 7px 27px; color: var(--ink-soft); font: 8px "SFMono-Regular", Consolas, monospace; }
+.range-calendar-layout { display: flex; gap: 7px; width: 1242px; }
+.range-calendar-cells { display: grid; grid-template-rows: repeat(7, 20px); grid-auto-flow: column; grid-auto-columns: 20px; gap: 3px; }
+.range-calendar-cells i, .range-calendar-cells button { width: 20px; height: 20px; padding: 0; border: 1px solid rgba(41,59,71,.1); background: rgba(41,59,71,.055); }
 .range-calendar-cells i { visibility: hidden; }
 .range-calendar-cells button { cursor: pointer; }
 .range-calendar-cells button.in-range { border-color: color-mix(in srgb, var(--red) 40%, transparent); background: color-mix(in srgb, var(--red) 35%, transparent); }
@@ -492,11 +492,8 @@ footer span { font-family: "SFMono-Regular", Consolas, monospace; letter-spacing
   .custom-range-panel > header { align-items: stretch; flex-direction: column; }
   .custom-range-inputs { grid-template-columns: 1fr; }
   .custom-range-inputs > span { display: none; }
-  .range-month-labels { width: 265px; margin-left: 0; }
-  .range-calendar-layout { width: 265px; }
+  .range-calendar { overflow-x: auto; }
   .range-calendar-layout .weekday-labels { display: none; }
-  .range-calendar-cells { grid-template-rows: repeat(7, 4px); grid-auto-columns: 4px; gap: 1px; }
-  .range-calendar-cells i, .range-calendar-cells button { width: 4px; height: 4px; border: 0; }
   .trend-heading { align-items: stretch; flex-direction: column; }
   .trend-heading .granularity-switch { align-self: flex-end; margin-top: -10px; }
   .page-heading { padding: 42px 0 28px; gap: 24px; }
