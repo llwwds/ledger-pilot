@@ -136,6 +136,8 @@ class MerchantRule(Base):
     label_ids_json: Mapped[str] = mapped_column(Text, default="[]")
     notes: Mapped[str | None] = mapped_column(Text)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    # NULL 表示规则尚未应用到任何数据，不会产生建议；应用一次后记录时间并保持生效。
+    applied_at: Mapped[datetime | None] = mapped_column(DateTime)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
 

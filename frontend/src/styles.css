@@ -326,10 +326,12 @@ footer span { font-family: "SFMono-Regular", Consolas, monospace; letter-spacing
 
 .rules-grid { display: grid; grid-template-columns: minmax(330px, .85fr) minmax(420px, 1.15fr); gap: 18px; }
 .rule-form, .rule-list { padding: 26px; border: 1px solid var(--line); background: rgba(245,247,247,.55); }
-.rule-labels { max-height: 280px; margin: 18px 0; overflow: auto; border: 1px solid var(--line); background: #fff7; }
-.rule-labels fieldset { margin: 0; padding: 12px; border: 0; border-bottom: 1px dotted var(--line); }
-.rule-labels legend { font: 600 10px "SFMono-Regular", Consolas, monospace; color: var(--red); }
-.rule-labels label { display: inline-flex; gap: 5px; margin: 5px 12px 5px 0; font-size: 11px; }
+.rule-label-trigger { display: grid; gap: 6px; width: 100%; margin: 14px 0 4px; padding: 13px 15px; border: 1px dashed var(--ink-soft); border-radius: 0; background: transparent; text-align: left; cursor: pointer; }
+.rule-label-trigger:hover { border-color: var(--blue); }
+.rule-trigger-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; font-size: 12px; color: var(--ink); }
+.rule-trigger-head b { font: 600 10px "SFMono-Regular", Consolas, monospace; color: var(--blue); }
+.rule-label-trigger small { color: var(--ink-soft); font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+.rule-form-note { margin: 10px 0 16px; color: var(--ink-soft); font-size: 11px; line-height: 1.7; }
 .rule-list > h2 { display: flex; justify-content: space-between; }
 .rule-list article { display: flex; justify-content: space-between; gap: 18px; padding: 18px 0; border-top: 1px solid var(--line); }
 .rule-list h3 { margin: 5px 0; font: 500 18px Georgia, "Songti SC", serif; }
@@ -338,6 +340,20 @@ footer span { font-family: "SFMono-Regular", Consolas, monospace; letter-spacing
 .rule-list article > div:last-child { display: flex; align-items: start; gap: 12px; }
 .rule-state { color: #385f4b; font: 9px "SFMono-Regular", Consolas, monospace; }
 .rule-state.off { color: var(--ink-soft); }
+.rule-state.pending { color: #a2701f; }
+.rule-label-picker { display: grid; width: min(1080px, 100%); max-height: calc(100vh - 40px); border: 1px solid var(--ink); background: var(--paper); box-shadow: 18px 18px 0 rgba(20,31,37,.22); }
+.rule-label-picker > header { display: flex; justify-content: space-between; gap: 24px; padding: 24px 28px; border-bottom: 1px solid var(--line); background: var(--blue); color: var(--paper); }
+.rule-label-picker header h2 { margin: 0; font: 500 30px Georgia, "Songti SC", serif; }
+.rule-label-picker header p:last-child { margin: 8px 0 0; color: #c8d1d4; font-size: 11px; }
+.rule-label-picker .eyebrow { color: #e9a08d !important; }
+.rule-picker-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); align-content: start; padding: 8px 12px; }
+.rule-picker-grid fieldset { margin: 0; padding: 16px 14px 14px; border: 0; border-bottom: 1px dotted var(--line); }
+.rule-picker-grid legend { padding: 0; font: 600 10px "SFMono-Regular", Consolas, monospace; color: var(--red); }
+.rule-picker-grid legend small { margin-left: 8px; font-weight: 400; color: var(--ink-soft); }
+.rule-picker-grid label { display: inline-flex; align-items: center; gap: 6px; margin: 6px 10px 6px 0; padding: 6px 10px; border: 1px solid var(--line); font-size: 12px; white-space: nowrap; cursor: pointer; }
+.rule-picker-grid label.picked { border-color: var(--blue); color: var(--blue); background: rgba(82,109,123,.09); }
+.rule-picker-empty { margin: 4px 0 0; color: var(--ink-soft); font-size: 11px; }
+.rule-label-picker > footer { padding: 18px 28px; border-top: 1px solid var(--line); }
 
 .modal-backdrop { position: fixed; z-index: 20; inset: 0; display: grid; place-items: center; padding: 20px; background: var(--overlay); backdrop-filter: blur(5px); }
 .annotation-dialog { width: min(880px, 100%); max-height: calc(100vh - 40px); overflow: auto; border: 1px solid var(--ink); background: var(--paper); box-shadow: 18px 18px 0 rgba(20,31,37,.22); }
@@ -413,6 +429,7 @@ footer span { font-family: "SFMono-Regular", Consolas, monospace; letter-spacing
 :root[data-theme="glass"] .advanced-filter-panel,
 :root[data-theme="glass"] .label-dialog,
 :root[data-theme="glass"] .manual-dialog,
+:root[data-theme="glass"] .rule-label-picker,
 :root[data-theme="glass"] .password-dialog {
   background: var(--panel);
   border-color: var(--line);
@@ -424,11 +441,13 @@ footer span { font-family: "SFMono-Regular", Consolas, monospace; letter-spacing
 :root[data-theme="glass"] .manual-dialog > header,
 :root[data-theme="glass"] .label-dialog > header,
 :root[data-theme="glass"] .password-dialog > header,
+:root[data-theme="glass"] .rule-label-picker > header,
 :root[data-theme="glass"] .annotation-dialog > header { color: var(--ink); background: linear-gradient(135deg, rgba(53, 77, 123, .96), rgba(35, 47, 82, .92)); }
 :root[data-theme="glass"] .summary-strip .hero-amount p,
 :root[data-theme="glass"] .summary-strip .hero-amount span,
 :root[data-theme="glass"] .manual-dialog header p:last-child,
 :root[data-theme="glass"] .label-dialog header p:last-child,
+:root[data-theme="glass"] .rule-label-picker header p:last-child,
 :root[data-theme="glass"] .annotation-dialog header p:last-child { color: var(--ink-soft); }
 :root[data-theme="glass"] .month-tick.active { color: #172038; }
 :root[data-theme="glass"] .month-tick.active::before { box-shadow: 0 0 30px rgba(240,201,122,.22); }
@@ -440,7 +459,7 @@ footer span { font-family: "SFMono-Regular", Consolas, monospace; letter-spacing
 :root[data-theme="glass"] .dimension-pane > button.active,
 :root[data-theme="glass"] .empty-ledger,
 :root[data-theme="glass"] .skeleton div,
-:root[data-theme="glass"] .rule-labels { background: rgba(45, 65, 104, .42); }
+:root[data-theme="glass"] .rule-label-trigger { background: rgba(45, 65, 104, .42); }
 :root[data-theme="glass"] .filters input,
 :root[data-theme="glass"] .filters select,
 :root[data-theme="glass"] .annotation-toolbar input,
@@ -462,6 +481,8 @@ footer span { font-family: "SFMono-Regular", Consolas, monospace; letter-spacing
 :root[data-theme="glass"] .annotation-fields select { color: var(--ink); background: var(--input); border-color: var(--line); color-scheme: dark; }
 :root[data-theme="glass"] .advanced-filter-condition input,
 :root[data-theme="glass"] .advanced-filter-condition select { color-scheme: dark; }
+:root[data-theme="glass"] .rule-picker-grid label { border-color: rgba(183, 205, 238, .24); }
+:root[data-theme="glass"] .rule-picker-grid label.picked { border-color: rgba(240, 201, 122, .55); color: var(--ink); background: rgba(240, 201, 122, .16); }
 :root[data-theme="glass"] .custom-range-inputs input { color-scheme: dark; }
 :root[data-theme="glass"] .range-calendar-cells button { border-color: rgba(190,211,242,.11); background: rgba(190,211,242,.075); }
 :root[data-theme="glass"] .range-calendar-cells button.in-range { border-color: rgba(240,201,122,.42); background: rgba(240,201,122,.34); }

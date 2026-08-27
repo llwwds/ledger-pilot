@@ -40,5 +40,6 @@ export const saveBatchAnnotations = (transactionIds: number[], labelIds: number[
 export const createManualTransaction = (body: ManualTransactionInput) => request<Transaction>('/api/transactions/manual', json('POST', body))
 export const getRules = () => request<MerchantRule[]>('/api/rules')
 export const createRule = (body: object) => request<MerchantRule>('/api/rules', json('POST', body))
+export const applyRule = (id: number) => request<{ rule: MerchantRule; matched: number }>(`/api/rules/${id}/apply`, { method: 'POST' })
 export const updateRule = (id: number, body: object) => request<MerchantRule>(`/api/rules/${id}`, json('PATCH', body))
 export const deleteRule = (id: number) => request<{ disposition: string }>(`/api/rules/${id}`, { method: 'DELETE' })

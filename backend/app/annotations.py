@@ -110,6 +110,13 @@ def label_catalog(session: Session) -> list[dict]:
     return result
 
 
+def rule_conditions_match(rule: MerchantRule, transaction: Transaction) -> bool:
+    """条件级匹配：平台等附加条件；金额范围条件由后续版本扩展。"""
+    if rule.source_platform and rule.source_platform != transaction.source_platform:
+        return False
+    return True
+
+
 def _matched_rule(session: Session, transaction: Transaction) -> MerchantRule | None:
     normalized = normalize_exact(transaction.counterparty or "")
     if not normalized:
@@ -117,10 +124,11 @@ def _matched_rule(session: Session, transaction: Transaction) -> MerchantRule | 
     rules = list(session.scalars(
         select(MerchantRule).where(
             MerchantRule.enabled.is_(True),
+            MerchantRule.applied_at.is_not(None),
             MerchantRule.counterparty_normalized == normalized,
         ).order_by(MerchantRule.id)
     ))
-    return next((rule for rule in rules if not rule.source_platform or rule.source_platform == transaction.source_platform), None)
+    return next((rule for rule in rules if rule_conditions_match(rule, transaction)), None)
 
 
 def _builtin_suggestions(session: Session, transaction: Transaction) -> list[int]:

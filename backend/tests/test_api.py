@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -90,9 +91,19 @@ def test_rule_prefill_manual_override_dashboard_and_transactions(client: TestCli
         "counterparty_exact": " 美团 ", "label_ids": [food["id"]],
     })
     assert rule.status_code == 201, rule.text
+    assert rule.json()["appliedAt"] is None
 
     all_transactions = client.get("/api/transactions", params={"month": "2026-07"}).json()["items"]
     meituan = next(item for item in all_transactions if item["merchant"] == "美团")
+    # 新建规则不会立刻生效：已有流水拿不到它的建议。
+    dormant = client.get(f"/api/transactions/{meituan['id']}/annotation").json()
+    assert food["id"] not in [item["id"] for item in dormant["assignments"]["rule"]]
+
+    # 手动应用一次后，规则对全部已有流水生效并保持启用。
+    applied = client.post(f"/api/rules/{rule.json()['id']}/apply")
+    assert applied.status_code == 200, applied.text
+    assert applied.json()["matched"] == 1
+    assert applied.json()["rule"]["appliedAt"] is not None
     suggestion = client.get(f"/api/transactions/{meituan['id']}/annotation").json()
     assert food["id"] in [item["id"] for item in suggestion["assignments"]["rule"]]
     pending_with_rule = client.get("/api/transactions", params={
@@ -260,6 +271,27 @@ def test_catalog_rules_and_manual_annotation_survive_restart(tmp_path: Path) -> 
         persisted = next(item for item in items if item["direction"] == "expense")
         assert persisted["category"] == "餐饮"
         assert persisted["categorySource"] == "manual"
+
+
+def test_old_database_gets_applied_at_column_backfilled(tmp_path: Path) -> None:
+    database_path = tmp_path / "legacy.db"
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            "CREATE TABLE merchant_rules ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, name VARCHAR(96), source_platform VARCHAR(16), "
+            "counterparty_exact TEXT, counterparty_normalized TEXT, label_ids_json TEXT, "
+            "notes TEXT, enabled BOOLEAN, created_at DATETIME, updated_at DATETIME)"
+        )
+        connection.execute(
+            "INSERT INTO merchant_rules (name, counterparty_exact, counterparty_normalized, "
+            "label_ids_json, enabled) VALUES ('旧规则', '美团', '美团', '[]', 1)"
+        )
+
+    application = create_app(database_url=f"sqlite:///{database_path}", data_root=tmp_path / "data")
+    with TestClient(application) as client:
+        rules = client.get("/api/rules").json()
+        assert len(rules) == 1
+        assert rules[0]["appliedAt"] is not None
 
 
 def test_invalid_month_is_rejected(client: TestClient) -> None:

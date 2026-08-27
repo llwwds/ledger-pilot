@@ -14,14 +14,15 @@ from typing import Literal
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from sqlalchemy import and_, delete, func, select
+from sqlalchemy import and_, delete, func, select, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.inspection import inspect
 from sqlalchemy.orm import Session, sessionmaker
 
 from .annotations import (
-    audit, effective_by_key, label_catalog, normalize_exact, save_manual_annotation,
-    seed_label_catalog, transaction_assignments,
+    audit, effective_by_key, label_catalog, normalize_exact, rule_conditions_match,
+    save_manual_annotation, seed_label_catalog, sync_rule_suggestions, transaction_assignments,
 )
 from .database import Base, build_engine, build_session_factory
 from .importers import ExpandedUpload, ImportFormatError, NormalizedTransaction, expand_upload, parse_upload
@@ -206,6 +207,25 @@ class ManualTransactionCreate(BaseModel):
     label_ids: list[int] = []
 
 
+def _migrate_sqlite_schema(engine: Engine) -> None:
+    """轻量补列迁移：create_all 不会为已存在的表新增列。"""
+    inspector = inspect(engine)
+    if not inspector.has_table("merchant_rules"):
+        return
+    columns = {column["name"] for column in inspector.get_columns("merchant_rules")}
+    additions: dict[str, str] = {}
+    if "applied_at" not in columns:
+        additions["applied_at"] = (
+            "DATETIME",
+            "UPDATE merchant_rules SET applied_at = CURRENT_TIMESTAMP WHERE applied_at IS NULL",
+        )
+    with engine.begin() as connection:
+        for name, (ddl, backfill) in additions.items():
+            connection.execute(text(f"ALTER TABLE merchant_rules ADD COLUMN {name} {ddl}"))
+            if backfill:
+                connection.execute(text(backfill))
+
+
 def _money(value: Decimal | int | float | None) -> float:
     return round(float(value or 0), 2)
 
@@ -354,6 +374,7 @@ def _rule_item(rule: MerchantRule) -> dict:
         "counterpartyExact": rule.counterparty_exact,
         "labelIds": json.loads(rule.label_ids_json or "[]"), "notes": rule.notes,
         "enabled": rule.enabled,
+        "appliedAt": rule.applied_at.isoformat() if rule.applied_at else None,
     }
 
 
@@ -402,12 +423,13 @@ def create_app(*, database_url: str | None = None, data_root: str | Path | None 
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         resolved_data_root.mkdir(parents=True, exist_ok=True)
         Base.metadata.create_all(engine)
+        _migrate_sqlite_schema(engine)
         with session_factory() as session:
             seed_label_catalog(session)
         yield
         engine.dispose()
 
-    application = FastAPI(title="Ledger Pilot API", version="1.7.0", lifespan=lifespan)
+    application = FastAPI(title="Ledger Pilot API", version="1.7.1", lifespan=lifespan)
     application.state.engine = engine
     application.state.data_root = resolved_data_root
     origins = list(settings.cors_origins)
@@ -561,6 +583,25 @@ def create_app(*, database_url: str | None = None, data_root: str | Path | None 
             label_ids_json=json.dumps(ids), notes=body.notes, enabled=body.enabled)
         session.add(rule); session.flush(); audit(session, "rule_created", "merchant_rule", rule.id, _rule_item(rule)); session.commit()
         return _rule_item(rule)
+
+    @application.post("/api/rules/{rule_id}/apply")
+    def apply_rule(rule_id: int, session: Session = Depends(session_dependency)) -> dict:
+        """把规则建议一次性应用到全部已有流水，并让规则保持生效。"""
+        rule = session.get(MerchantRule, rule_id)
+        if rule is None:
+            raise HTTPException(status_code=404, detail="规则不存在")
+        matched = 0
+        for transaction in session.scalars(select(Transaction)).all():
+            if normalize_exact(transaction.counterparty or "") != rule.counterparty_normalized:
+                continue
+            if not rule_conditions_match(rule, transaction):
+                continue
+            sync_rule_suggestions(session, transaction)
+            matched += 1
+        rule.applied_at = utc_now()
+        audit(session, "rule_applied", "merchant_rule", rule.id, {"matched": matched})
+        session.commit()
+        return {"rule": _rule_item(rule), "matched": matched}
 
     @application.patch("/api/rules/{rule_id}")
     def update_rule(rule_id: int, body: RulePatch, session: Session = Depends(session_dependency)) -> dict:

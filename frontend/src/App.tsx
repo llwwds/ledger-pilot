@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Area, AreaChart, CartesianGrid, Cell, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import {
-  createDimension, createLabel, createManualTransaction, createRule, deleteDimension, deleteLabel, deleteRule,
+  applyRule, createDimension, createLabel, createManualTransaction, createRule, deleteDimension, deleteLabel, deleteRule,
   getAnnotation, getDashboard, getHeatmaps, getLabelCatalog, getRules, importStatements, searchTransactions,
   saveAnnotation, saveBatchAnnotations, updateDimension, updateLabel, updateRule,
 } from './api'
@@ -229,7 +229,7 @@ function App() {
       onSubmit={(password) => { const files = pendingArchives; setPendingArchives([]); void handleImport(files, password) }}
     />}
     {manualEntryOpen && <ManualEntryDialog catalog={catalog} onClose={() => setManualEntryOpen(false)} onSaved={handleManualSaved} report={report} />}
-    <footer><span>LEDGER PILOT / V1.7.0</span><p>规则给建议，最终选择由你确认；原始流水永不被标注修改。</p></footer>
+    <footer><span>LEDGER PILOT / V1.7.1</span><p>规则给建议，最终选择由你确认；原始流水永不被标注修改。</p></footer>
   </main>
 }
 
@@ -635,9 +635,43 @@ function LabelDeleteDialog({ target, error, onClose, onConfirm }: {
 
 function RulesManager({ catalog, rules, reload, report, announce }: { catalog: LabelDimension[]; rules: MerchantRule[]; reload: () => Promise<void>; report: (reason: unknown) => void; announce: (value: string) => void }) {
   const [draft, setDraft] = useState({ name: '', source_platform: '', counterparty_exact: '', label_ids: [] as number[], notes: '' })
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const [applyingId, setApplyingId] = useState<number | null>(null)
   async function run(action: () => Promise<unknown>, message: string) { try { await action(); await reload(); announce(message) } catch (reason) { report(reason) } }
-  const toggle = (id: number) => setDraft((value) => ({ ...value, label_ids: value.label_ids.includes(id) ? value.label_ids.filter((item) => item !== id) : [...value.label_ids, id] }))
-  return <section className="workspace-page"><div className="workspace-heading"><p className="eyebrow">EXACT MATCH RULES</p><h1>让重复出现的商户自动填好建议</h1><p>只匹配交易对方完整名称；不扫描关键词，不读取商品说明。人工确认永远优先。</p></div><div className="rules-grid"><form className="rule-form" onSubmit={(event) => { event.preventDefault(); void run(() => createRule(draft), '预填规则已创建'); setDraft({ name: '', source_platform: '', counterparty_exact: '', label_ids: [], notes: '' }) }}><h2>新建精确规则</h2><label>规则名称<input required value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} /></label><label>平台<select value={draft.source_platform} onChange={(e) => setDraft({ ...draft, source_platform: e.target.value })}><option value="">不限平台</option><option>微信</option><option>支付宝</option></select></label><label>交易对方完整名称<input required value={draft.counterparty_exact} onChange={(e) => setDraft({ ...draft, counterparty_exact: e.target.value })} placeholder="必须与账单原值完全一致" /></label><label>备注<textarea value={draft.notes} onChange={(e) => setDraft({ ...draft, notes: e.target.value })} /></label><div className="rule-labels">{catalog.filter((d) => d.enabled).map((dimension) => <fieldset key={dimension.id}><legend>{dimension.name}</legend>{dimension.labels.filter((label) => label.enabled).map((label) => <label key={label.id}><input type="checkbox" checked={draft.label_ids.includes(label.id)} onChange={() => toggle(label.id)} />{label.name}</label>)}</fieldset>)}</div><button className="button primary">创建规则</button></form><section className="rule-list"><h2>现有规则 <small>{rules.length}</small></h2>{rules.length ? rules.map((rule) => <article key={rule.id}><div><span className={rule.enabled ? 'rule-state' : 'rule-state off'}>{rule.enabled ? '启用' : '停用'}</span><h3>{rule.name}</h3><p>{rule.sourcePlatform || '全平台'} · “{rule.counterpartyExact}”</p><small>{rule.labelIds.map((id) => catalog.flatMap((d) => d.labels).find((label) => label.id === id)?.name).filter(Boolean).join('、') || '未配置标签'}</small></div><div><button className="text-button" onClick={() => void run(() => updateRule(rule.id, { enabled: !rule.enabled }), '规则状态已更新')}>{rule.enabled ? '停用' : '启用'}</button><button className="danger-link" onClick={() => { if (window.confirm('删除这条规则？')) void run(() => deleteRule(rule.id), '规则已删除') }}>删除</button></div></article>) : <EmptyState text="还没有商户精确规则" />}</section></div></section>
+  const toggle = (id: number) => setDraft((value) => {
+    const dimension = catalog.find((item) => item.labels.some((label) => label.id === id))
+    if (!dimension) return value
+    if (dimension.selectionMode === 'single') {
+      const dimensionIds = new Set(dimension.labels.map((label) => label.id))
+      const already = value.label_ids.includes(id)
+      return { ...value, label_ids: [...value.label_ids.filter((item) => !dimensionIds.has(item)), ...(already ? [] : [id])] }
+    }
+    return { ...value, label_ids: value.label_ids.includes(id) ? value.label_ids.filter((item) => item !== id) : [...value.label_ids, id] }
+  })
+  const labelNameById = new Map(catalog.flatMap((item) => item.labels).map((label) => [label.id, label.name]))
+  const selectedNames = draft.label_ids.map((id) => labelNameById.get(id)).filter(Boolean).join('、')
+  const stateOf = (rule: MerchantRule) => !rule.appliedAt
+    ? { text: '待应用', className: 'rule-state pending', hint: '尚未应用到任何流水，不会产生建议' }
+    : rule.enabled
+      ? { text: '生效中', className: 'rule-state', hint: '' }
+      : { text: '已停用', className: 'rule-state off', hint: '' }
+  async function applyOnce(rule: MerchantRule) {
+    setApplyingId(rule.id)
+    try {
+      const result = await applyRule(rule.id)
+      await reload()
+      announce(`规则已应用到 ${result.matched} 笔已有流水，并保持生效。`)
+    } catch (reason) { report(reason) } finally { setApplyingId(null) }
+  }
+  return <section className="workspace-page"><div className="workspace-heading"><p className="eyebrow">EXACT MATCH RULES</p><h1>让重复出现的商户自动填好建议</h1><p>只匹配交易对方完整名称；不扫描关键词，不读取商品说明。新规则先待应用，点击一次“应用到已有流水”后才生效。人工确认永远优先。</p></div><div className="rules-grid"><form className="rule-form" onSubmit={(event) => { event.preventDefault(); void run(() => createRule(draft), '预填规则已创建，尚未应用到已有流水'); setDraft({ name: '', source_platform: '', counterparty_exact: '', label_ids: [], notes: '' }) }}><h2>新建精确规则</h2><label>规则名称<input required value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} /></label><label>平台<select value={draft.source_platform} onChange={(e) => setDraft({ ...draft, source_platform: e.target.value })}><option value="">不限平台</option><option>微信</option><option>支付宝</option></select></label><label>交易对方完整名称<input required value={draft.counterparty_exact} onChange={(e) => setDraft({ ...draft, counterparty_exact: e.target.value })} placeholder="必须与账单原值完全一致" /></label><label>备注<textarea value={draft.notes} onChange={(e) => setDraft({ ...draft, notes: e.target.value })} /></label><button type="button" className="rule-label-trigger" onClick={() => setPickerOpen(true)}><span className="rule-trigger-head"><span>预填标签</span><b>{draft.label_ids.length ? `已选 ${draft.label_ids.length} 个` : '未选择'}</b></span><small>{selectedNames || '打开整面标签面板选择；可留空，命中时只确认商户'}</small></button><p className="rule-form-note">创建后规则保持“待应用”，不会影响已有流水；在右侧对它点击一次“应用到已有流水”，才会对所有匹配数据生效一次并转入生效中。</p><button className="button primary">创建规则</button></form><section className="rule-list"><h2>现有规则 <small>{rules.length}</small></h2>{rules.length ? rules.map((rule) => { const state = stateOf(rule); return <article key={rule.id}><div><span className={state.className} title={state.hint}>{state.text}</span><h3>{rule.name}</h3><p>{rule.sourcePlatform || '全平台'} · “{rule.counterpartyExact}”</p><small>{rule.labelIds.map((id) => labelNameById.get(id)).filter(Boolean).join('、') || '未配置标签'}</small></div><div>{!rule.appliedAt && <button className="text-button" disabled={applyingId === rule.id} onClick={() => void applyOnce(rule)}>{applyingId === rule.id ? '应用中…' : '应用到已有流水'}</button>}<button className="text-button" onClick={() => void run(() => updateRule(rule.id, { enabled: !rule.enabled }), '规则状态已更新')}>{rule.enabled ? '停用' : '启用'}</button><button className="danger-link" onClick={() => { if (window.confirm('删除这条规则？')) void run(() => deleteRule(rule.id), '规则已删除') }}>删除</button></div></article> }) : <EmptyState text="还没有商户精确规则" />}</section></div>{pickerOpen && <RuleLabelPicker catalog={catalog} selected={draft.label_ids} onToggle={toggle} onClear={() => setDraft((value) => ({ ...value, label_ids: [] }))} onClose={() => setPickerOpen(false)} />}</section>
+}
+
+function RuleLabelPicker({ catalog, selected, onToggle, onClear, onClose }: {
+  catalog: LabelDimension[]; selected: number[]
+  onToggle: (id: number) => void; onClear: () => void; onClose: () => void
+}) {
+  const dimensions = catalog.filter((item) => item.enabled)
+  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><section className="rule-label-picker" role="dialog" aria-modal="true" aria-labelledby="rule-picker-title"><header><div><p className="eyebrow">RULE LABELS</p><h2 id="rule-picker-title">选择规则要预填的标签</h2><p>全部维度一次完整展开，不做内嵌滚动；单选维度一次只保留一个标签。</p></div><button className="close-button" onClick={onClose} aria-label="关闭标签面板">×</button></header><div className="rule-picker-grid">{dimensions.map((dimension) => <fieldset key={dimension.id}><legend>{dimension.name}<small>{dimension.selectionMode === 'multiple' ? '可多选' : '单选'}</small></legend>{treeOptions(dimension.labels).filter(({ label }) => label.enabled).map(({ label, depth }) => <label key={label.id} className={selected.includes(label.id) ? 'picked' : ''} style={{ marginLeft: depth * 14 }}><input type="checkbox" checked={selected.includes(label.id)} onChange={() => onToggle(label.id)} />{label.name}</label>)}{!dimension.labels.some((label) => label.enabled) && <p className="rule-picker-empty">该维度暂无可用标签</p>}</fieldset>)}</div><footer className="dialog-actions"><button type="button" className="button ghost" onClick={onClear} disabled={!selected.length}>清除已选</button><button type="button" className="button primary" onClick={onClose}>完成（已选 {selected.length} 个标签）</button></footer></section></div>
 }
 
 function PanelHeading({ index, title, meta }: { index: string; title: string; meta: string }) { return <div className="panel-heading"><div><span>{index}</span><h2>{title}</h2></div><small>{meta}</small></div> }

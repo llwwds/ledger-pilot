@@ -305,6 +305,54 @@ describe('App', () => {
     expect(await screen.findByText('稳定流水')).toBeInTheDocument()
     expect(screen.queryByLabelText('正在读取')).not.toBeInTheDocument()
   })
+
+  it('预填规则在整面标签面板选择，创建后待应用并可手动应用一次', async () => {
+    const dimension = labelDimension()
+    let savedRules: Array<Record<string, unknown>> = []
+    const applyCalls: string[] = []
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((input: string, init?: RequestInit) => {
+      const url = String(input)
+      const method = String(init?.method ?? 'GET')
+      if (url.includes('/api/label-catalog')) return response([dimension])
+      if (url.endsWith('/api/rules') && method === 'GET') return response(savedRules)
+      if (url.endsWith('/api/rules') && method === 'POST') {
+        const body = JSON.parse(String(init?.body)) as { name: string; label_ids: number[] }
+        const created = { id: 7, name: body.name, counterpartyExact: '米村拌饭', labelIds: body.label_ids, enabled: true, appliedAt: null }
+        savedRules = [created]
+        return response(created)
+      }
+      if (url.endsWith('/api/rules/7/apply')) {
+        applyCalls.push(url)
+        savedRules = [{ ...savedRules[0], appliedAt: '2026-08-27T10:00:00' }]
+        return response({ rule: savedRules[0], matched: 3 })
+      }
+      if (url.includes('/api/heatmaps')) return response({ year: 2026, expense: [], income: [] })
+      return response({ summary: { income: 0, expense: 0, net: 0 }, trend: [], categories: [], channels: [], distributions: [], recent: [] })
+    }))
+
+    render(<App />)
+    fireEvent.click(screen.getByRole('button', { name: '预填规则' }))
+    expect(await screen.findByRole('heading', { name: '新建精确规则' })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /预填标签/ }))
+    const picker = screen.getByRole('dialog', { name: '选择规则要预填的标签' })
+    fireEvent.click(within(picker).getByRole('checkbox', { name: '餐饮' }))
+    expect(within(picker).getByRole('checkbox', { name: '餐饮' })).toBeChecked()
+    fireEvent.click(within(picker).getByRole('button', { name: '完成（已选 1 个标签）' }))
+
+    fireEvent.change(screen.getByLabelText('规则名称'), { target: { value: '米村拌饭' } })
+    fireEvent.change(screen.getByLabelText('交易对方完整名称'), { target: { value: '米村拌饭' } })
+    fireEvent.click(screen.getByRole('button', { name: '创建规则' }))
+
+    expect(await screen.findByText('待应用')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '应用到已有流水' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '应用到已有流水' }))
+
+    expect(await screen.findByText('规则已应用到 3 笔已有流水，并保持生效。')).toBeInTheDocument()
+    expect(screen.getByText('生效中')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '应用到已有流水' })).not.toBeInTheDocument()
+    expect(applyCalls).toHaveLength(1)
+  })
 })
 
 function response(payload: unknown) {
