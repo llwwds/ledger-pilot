@@ -233,6 +233,7 @@ describe('App', () => {
     await waitFor(() => expect(searchBodies.some((body) => Array.isArray(body.filters) && body.filters.length === 3)).toBe(true))
     const body = [...searchBodies].reverse().find((item) => Array.isArray(item.filters) && item.filters.length === 3)
     expect(body).toMatchObject({
+      month: '2026-08',
       query: { text: '咖啡', mode: 'exclude' }, annotation_status: 'pending', page: 1, page_size: 500,
       filters: [
         { field: 'counterparty', mode: 'include', operator: 'contains', value: '星巴克' },
@@ -240,11 +241,42 @@ describe('App', () => {
         { field: 'transaction_time', mode: 'include', operator: 'range', min: '2026-07-15', max: '2026-08-20' },
       ],
     })
-    expect(body).not.toHaveProperty('month')
-    expect(screen.getByText('日期条件已接管月份快捷范围')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '恢复月份快捷范围' })).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: '恢复月份快捷范围' }))
-    await waitFor(() => expect(searchBodies.some((item) => item.month === '2026-08' && Array.isArray(item.filters) && item.filters.length === 2)).toBe(true))
+    expect(screen.queryByText('日期条件已接管月份快捷范围')).not.toBeInTheDocument()
+  })
+
+  it('流水标注页用时间范围筛选切换年度与自定义范围', async () => {
+    const searchBodies: Array<Record<string, unknown>> = []
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((input: string, init?: RequestInit) => {
+      const url = String(input)
+      if (url.includes('/api/label-catalog') || url.endsWith('/api/rules')) return response([])
+      if (url.includes('/api/heatmaps')) return response({ year: 2026, expense: [], income: [] })
+      if (url.includes('/api/transactions/search')) {
+        searchBodies.push(JSON.parse(String(init?.body)))
+        return response({ items: [], total: 0, page: 1, pageSize: 500 })
+      }
+      return response({ summary: { income: 0, expense: 0, net: 0 }, trend: [], categories: [], channels: [], distributions: [], recent: [] })
+    }))
+
+    render(<App />)
+    fireEvent.click(screen.getByRole('button', { name: '流水标注' }))
+    await waitFor(() => expect(searchBodies.length).toBe(1))
+    expect(searchBodies[0]).toMatchObject({ month: '2026-08', filters: [] })
+
+    fireEvent.click(screen.getByRole('button', { name: '年度' }))
+    await waitFor(() => expect(searchBodies.length).toBe(2))
+    expect(searchBodies[1]).not.toHaveProperty('month')
+    expect(searchBodies[1]).toMatchObject({ filters: [{ field: 'transaction_time', mode: 'include', operator: 'range', min: '2026-01-01', max: '2026-12-31' }] })
+
+    fireEvent.click(screen.getByRole('button', { name: '自定义' }))
+    expect(await screen.findByText('选择要复盘的时间边界')).toBeInTheDocument()
+    await waitFor(() => expect(searchBodies.length).toBe(3))
+    const today = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10)
+    expect(searchBodies[2]).not.toHaveProperty('month')
+    expect(searchBodies[2]).toMatchObject({ filters: [{ field: 'transaction_time', mode: 'include', operator: 'range', min: `${today.slice(0, 7)}-01`, max: today }] })
+
+    fireEvent.click(screen.getByRole('button', { name: '月度' }))
+    await waitFor(() => expect(searchBodies.length).toBe(4))
+    expect(searchBodies[3]).toMatchObject({ month: '2026-08', filters: [] })
   })
 
   it('筛选变化立即清空选择并拒绝 debounce 窗口内的旧响应', async () => {

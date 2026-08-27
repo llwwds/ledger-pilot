@@ -445,7 +445,7 @@ def create_app(*, database_url: str | None = None, data_root: str | Path | None 
         yield
         engine.dispose()
 
-    application = FastAPI(title="Ledger Pilot API", version="1.8.0", lifespan=lifespan)
+    application = FastAPI(title="Ledger Pilot API", version="1.8.1", lifespan=lifespan)
     application.state.engine = engine
     application.state.data_root = resolved_data_root
     origins = list(settings.cors_origins)

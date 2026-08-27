@@ -26,17 +26,54 @@ function shiftMonth(value: string, offset: number) { const [year, month] = value
 function monthName(value: string) { const [year, month] = value.split('-'); return `${year} 年 ${Number(month)} 月` }
 function localDateTime() { const date = new Date(); date.setMinutes(date.getMinutes() - date.getTimezoneOffset()); return date.toISOString().slice(0, 19) }
 
+interface TimeRangeControls {
+  mode: DashboardMode; setMode: (value: DashboardMode) => void
+  month: string; setMonth: (value: string) => void
+  year: number; setYear: (value: number) => void
+  customStart: string; setCustomStart: (value: string) => void
+  customEnd: string; setCustomEnd: (value: string) => void
+  rangeGranularity: DashboardGranularity; setRangeGranularity: (value: DashboardGranularity) => void
+  calendarYear: number; setCalendarYear: (value: number) => void
+  range: DashboardRange
+}
+
+function useTimeRangeState(onModify?: () => void): TimeRangeControls {
+  const [mode, setModeState] = useState<DashboardMode>('month')
+  const [month, setMonthState] = useState(currentMonth)
+  const [year, setYearState] = useState(() => new Date().getFullYear())
+  const [customStart, setCustomStartState] = useState(() => monthStart(currentMonth()))
+  const [customEnd, setCustomEndState] = useState(localDate)
+  const [rangeGranularity, setRangeGranularityState] = useState<DashboardGranularity>('day')
+  const [calendarYear, setCalendarYearState] = useState(() => new Date().getFullYear())
+  const setMode = useCallback((value: DashboardMode) => { setModeState(value); onModify?.() }, [onModify])
+  const setMonth = useCallback((value: string) => { setMonthState(value); onModify?.() }, [onModify])
+  const setYear = useCallback((value: number) => { setYearState(value); onModify?.() }, [onModify])
+  const setCustomStart = useCallback((value: string) => { setCustomStartState(value); onModify?.() }, [onModify])
+  const setCustomEnd = useCallback((value: string) => { setCustomEndState(value); onModify?.() }, [onModify])
+  const setRangeGranularity = useCallback((value: DashboardGranularity) => { setRangeGranularityState(value); onModify?.() }, [onModify])
+  const setCalendarYear = useCallback((value: number) => { setCalendarYearState(value); onModify?.() }, [onModify])
+  const range = useMemo<DashboardRange>(() => mode === 'month'
+    ? { mode: 'month', month }
+    : mode === 'year'
+      ? { mode: 'year', year }
+      : { mode: 'custom', startDate: customStart, endDate: customEnd }, [customEnd, customStart, mode, month, year])
+  return useMemo(() => ({ mode, setMode, month, setMonth, year, setYear, customStart, setCustomStart, customEnd, setCustomEnd, rangeGranularity, setRangeGranularity, calendarYear, setCalendarYear, range }),
+    [calendarYear, customEnd, customStart, mode, month, range, rangeGranularity, setCalendarYear, setCustomEnd, setCustomStart, setMode, setMonth, setRangeGranularity, setYear, year])
+}
+
+function TimeRangeSelector({ controls }: { controls: TimeRangeControls }) {
+  return <>
+    <DashboardRangeNav mode={controls.mode} setMode={controls.setMode} />
+    {controls.mode === 'month' && <MonthRail month={controls.month} setMonth={controls.setMonth} />}
+    {controls.mode === 'year' && <YearRail year={controls.year} setYear={controls.setYear} />}
+    {controls.mode === 'custom' && <CustomRangePanel controls={controls} />}
+  </>
+}
+
 function App() {
   const [view, setView] = useState<View>('dashboard')
   const [theme, setTheme] = useState<Theme>(() => window.localStorage.getItem(THEME_STORAGE_KEY) === 'glass' ? 'glass' : 'ledger')
-  const [month, setMonth] = useState(currentMonth)
-  const [dashboardMode, setDashboardMode] = useState<DashboardMode>('month')
-  const [dashboardYear, setDashboardYear] = useState(new Date().getFullYear())
-  const [customStart, setCustomStart] = useState(monthStart(currentMonth()))
-  const [customEnd, setCustomEnd] = useState(localDate)
-  const [rangeGranularity, setRangeGranularity] = useState<DashboardGranularity>('day')
   const [trendGranularity, setTrendGranularity] = useState<DashboardGranularity>('day')
-  const [calendarYear, setCalendarYear] = useState(new Date().getFullYear())
   const [data, setData] = useState<DashboardData | null>(null)
   const [heatmaps, setHeatmaps] = useState<HeatmapData | null>(null)
   const [heatmapLoading, setHeatmapLoading] = useState(true)
@@ -74,12 +111,17 @@ function App() {
   const report = useCallback((reason: unknown) => setError(reason instanceof Error ? reason.message : '操作未完成'), [])
   const loadCatalog = useCallback(async () => setCatalog(await getLabelCatalog()), [])
   const loadRules = useCallback(async () => setRules(await getRules()), [])
-  const dashboardRange = useMemo<DashboardRange>(() => dashboardMode === 'month'
-    ? { mode: 'month', month }
-    : dashboardMode === 'year'
-      ? { mode: 'year', year: dashboardYear }
-      : { mode: 'custom', startDate: customStart, endDate: customEnd }, [customEnd, customStart, dashboardMode, dashboardYear, month])
-  const heatmapYear = dashboardMode === 'month' ? Number(month.slice(0, 4)) : dashboardMode === 'year' ? dashboardYear : Number(customStart.slice(0, 4))
+  const invalidateAnnotationQueue = useCallback(() => {
+    annotationRequestId.current += 1
+    setAnnotationCriteriaVersion((value) => value + 1)
+    setAnnotationLoading(true)
+    setSelectedTransactionIds([])
+    setBatchEditorOpen(false)
+    setAnnotationIndex(null)
+  }, [])
+  const dashboardControls = useTimeRangeState()
+  const annotationControls = useTimeRangeState(invalidateAnnotationQueue)
+  const heatmapYear = dashboardControls.mode === 'month' ? Number(dashboardControls.month.slice(0, 4)) : dashboardControls.mode === 'year' ? dashboardControls.year : Number(dashboardControls.customStart.slice(0, 4))
   const loadHeatmaps = useCallback(async () => {
     const requestId = ++heatmapRequestId.current
     setHeatmapLoading(true)
@@ -99,19 +141,24 @@ function App() {
   const loadDashboard = useCallback(async () => {
     const requestId = ++dashboardRequestId.current
     setLoading(true); setError('')
-    try { const result = await getDashboard(dashboardRange, trendGranularity); if (requestId === dashboardRequestId.current) setData(result) }
+    try { const result = await getDashboard(dashboardControls.range, trendGranularity); if (requestId === dashboardRequestId.current) setData(result) }
     catch (reason) { if (requestId === dashboardRequestId.current) { report(reason); setData(null) } }
     finally { if (requestId === dashboardRequestId.current) setLoading(false) }
-  }, [dashboardRange, report, trendGranularity])
+  }, [dashboardControls.range, report, trendGranularity])
 
   const loadAnnotationQueue = useCallback(async () => {
     const requestId = ++annotationRequestId.current
     setAnnotationLoading(true); setError('')
+    const rangeFilters = annotationControls.mode === 'month' ? [] : [serializeFilter({
+      field: 'transaction_time', mode: 'include', operator: 'range',
+      min: annotationControls.mode === 'year' ? `${annotationControls.year}-01-01` : annotationControls.customStart,
+      max: annotationControls.mode === 'year' ? `${annotationControls.year}-12-31` : annotationControls.customEnd,
+    })]
     try {
       const result = await searchTransactions({
-        ...(transactionFilters.some((item) => item.field === 'transaction_time') ? {} : { month }),
+        ...(annotationControls.mode === 'month' ? { month: annotationControls.month } : {}),
         ...(query.trim() ? { query: { text: query.trim(), mode: queryMode } } : {}),
-        filters: transactionFilters.map(serializeFilter), ...(category ? { category } : {}), ...(channel ? { channel } : {}),
+        filters: [...rangeFilters, ...transactionFilters.map(serializeFilter)], ...(category ? { category } : {}), ...(channel ? { channel } : {}),
         annotation_status: 'pending', page: 1, page_size: 500,
       })
       if (requestId !== annotationRequestId.current) return []
@@ -123,16 +170,7 @@ function App() {
       if (requestId === annotationRequestId.current) { report(reason); setTransactions([]); setTransactionTotal(0); setSelectedTransactionIds([]) }
       return []
     } finally { if (requestId === annotationRequestId.current) setAnnotationLoading(false) }
-  }, [month, category, channel, query, queryMode, report, transactionFilters])
-
-  const invalidateAnnotationQueue = useCallback(() => {
-    annotationRequestId.current += 1
-    setAnnotationCriteriaVersion((value) => value + 1)
-    setAnnotationLoading(true)
-    setSelectedTransactionIds([])
-    setBatchEditorOpen(false)
-    setAnnotationIndex(null)
-  }, [])
+  }, [annotationControls, category, channel, query, queryMode, report, transactionFilters])
 
   useEffect(() => { void Promise.all([loadDashboard(), loadHeatmaps(), loadCatalog(), loadRules()]).catch(report) }, [loadDashboard, loadHeatmaps, loadCatalog, loadRules, report])
   useEffect(() => {
@@ -167,7 +205,7 @@ function App() {
     setManualEntryOpen(false)
     setNotice('手动流水已记录，并保留原始快照与审计日志。')
     const savedMonth = transaction.date.slice(0, 7)
-    if (dashboardMode !== 'month' || savedMonth === month) await Promise.all([loadDashboard(), loadHeatmaps()]); else setMonth(savedMonth)
+    if (dashboardControls.mode !== 'month' || savedMonth === dashboardControls.month) await Promise.all([loadDashboard(), loadHeatmaps()]); else dashboardControls.setMonth(savedMonth)
   }
 
   return <main>
@@ -190,15 +228,13 @@ function App() {
 
     <input ref={fileRef} className="sr-only" type="file" multiple accept=".csv,.xlsx,.zip" onChange={(event) => { const files = [...(event.target.files ?? [])]; if (files.some((file) => file.name.toLowerCase().endsWith('.zip'))) setPendingArchives(files); else void handleImport(files) }} />
     {view === 'dashboard' && <Dashboard
-      theme={theme} month={month} setMonth={setMonth} mode={dashboardMode} setMode={setDashboardMode}
-      year={dashboardYear} setYear={setDashboardYear} customStart={customStart} setCustomStart={setCustomStart}
-      customEnd={customEnd} setCustomEnd={setCustomEnd} rangeGranularity={rangeGranularity} setRangeGranularity={setRangeGranularity}
-      trendGranularity={trendGranularity} setTrendGranularity={setTrendGranularity} calendarYear={calendarYear} setCalendarYear={setCalendarYear}
+      theme={theme} controls={dashboardControls}
+      trendGranularity={trendGranularity} setTrendGranularity={setTrendGranularity}
       data={data} heatmaps={heatmaps} heatmapLoading={heatmapLoading} heatmapError={heatmapError} loading={loading}
       busy={busy} onPickFiles={() => fileRef.current?.click()} onManualEntry={() => setManualEntryOpen(true)}
     />}
     {view === 'annotations' && <AnnotationQueuePage
-      month={month} setMonth={(value) => { invalidateAnnotationQueue(); setMonth(value) }} data={data}
+      range={annotationControls} data={data}
       transactions={transactions} total={transactionTotal} loading={annotationLoading}
       category={category} setCategory={(value) => { invalidateAnnotationQueue(); setCategory(value) }}
       channel={channel} setChannel={(value) => { invalidateAnnotationQueue(); setChannel(value) }}
@@ -229,7 +265,7 @@ function App() {
       onSubmit={(password) => { const files = pendingArchives; setPendingArchives([]); void handleImport(files, password) }}
     />}
     {manualEntryOpen && <ManualEntryDialog catalog={catalog} onClose={() => setManualEntryOpen(false)} onSaved={handleManualSaved} report={report} />}
-    <footer><span>LEDGER PILOT / V1.8.0</span><p>规则给建议，最终选择由你确认；原始流水永不被标注修改。</p></footer>
+    <footer><span>LEDGER PILOT / V1.8.1</span><p>规则给建议，最终选择由你确认；原始流水永不被标注修改。</p></footer>
   </main>
 }
 
@@ -260,31 +296,26 @@ function ArchivePasswordDialog({ fileCount, onClose, onSubmit }: { fileCount: nu
 
 function Dashboard(props: {
   theme: Theme
-  month: string; setMonth: (value: string) => void; mode: DashboardMode; setMode: (value: DashboardMode) => void
-  year: number; setYear: (value: number) => void; customStart: string; setCustomStart: (value: string) => void; customEnd: string; setCustomEnd: (value: string) => void
-  rangeGranularity: DashboardGranularity; setRangeGranularity: (value: DashboardGranularity) => void
+  controls: TimeRangeControls
   trendGranularity: DashboardGranularity; setTrendGranularity: (value: DashboardGranularity) => void
-  calendarYear: number; setCalendarYear: (value: number) => void
   data: DashboardData | null; heatmaps: HeatmapData | null; heatmapLoading: boolean; heatmapError: string; loading: boolean
   busy: boolean; onPickFiles: () => void; onManualEntry: () => void
 }) {
-  const { month, data, theme, mode } = props
+  const { theme, data, controls } = props
+  const { mode, month, year, customStart, customEnd } = controls
   const chartColors = THEME_CHARTS[theme]
   const summary = data?.summary ?? { income: 0, expense: 0, net: 0 }
-  const rangeTitle = mode === 'month' ? monthName(month) : mode === 'year' ? `${props.year} 年` : `${props.customStart} 至 ${props.customEnd}`
-  const rangeMeta = mode === 'month' ? month.replace('-', '.') : mode === 'year' ? String(props.year) : `${props.customStart.replaceAll('-', '.')}—${props.customEnd.replaceAll('-', '.')}`
-  const heatmapYear = mode === 'month' ? Number(month.slice(0, 4)) : mode === 'year' ? props.year : Number(props.customStart.slice(0, 4))
-  const crossYear = mode === 'custom' && props.customStart.slice(0, 4) !== props.customEnd.slice(0, 4)
+  const rangeTitle = mode === 'month' ? monthName(month) : mode === 'year' ? `${year} 年` : `${customStart} 至 ${customEnd}`
+  const rangeMeta = mode === 'month' ? month.replace('-', '.') : mode === 'year' ? String(year) : `${customStart.replaceAll('-', '.')}—${customEnd.replaceAll('-', '.')}`
+  const heatmapYear = mode === 'month' ? Number(month.slice(0, 4)) : mode === 'year' ? year : Number(customStart.slice(0, 4))
+  const crossYear = mode === 'custom' && customStart.slice(0, 4) !== customEnd.slice(0, 4)
   const granularityName = { day: '日', week: '周', month: '月' }[props.trendGranularity]
   const distributions = data?.distributions ?? (data ? [
     { dimensionId: 'legacy-expense-category', key: 'expense_category', name: '支出分类', items: data.categories },
     { dimensionId: 'legacy-payment-channel', key: 'payment_channel', name: '支付渠道', items: data.channels },
   ] : [])
   return <>
-    <DashboardRangeNav mode={mode} setMode={props.setMode} />
-    {mode === 'month' && <MonthRail month={month} setMonth={props.setMonth} />}
-    {mode === 'year' && <YearRail year={props.year} setYear={props.setYear} />}
-    {mode === 'custom' && <CustomRangePanel {...props} />}
+    <TimeRangeSelector controls={controls} />
     <section className="page-heading"><div><p className="eyebrow">LEDGER REVIEW / {rangeMeta}</p><h1>{rangeTitle}，逐笔把钱说清楚</h1><p>看板范围与曲线颗粒度彼此独立；规则给出建议，最终结果仍由你确认。</p></div><div className="actions"><button className="button secondary" onClick={props.onManualEntry}>手动记账</button><button className="button primary" onClick={props.onPickFiles} disabled={props.busy}>{props.busy ? '正在合并…' : '导入账单'}</button></div></section>
     {props.loading ? <DashboardSkeleton /> : data ? <>
       <section className="summary-strip"><article className="hero-amount"><p>范围支出</p><strong>{money.format(summary.expense)}</strong><span>共计流出</span></article><article><p>范围收入</p><strong>{money.format(summary.income)}</strong><span>已入账</span></article><article><p>收支净额</p><strong className={summary.net < 0 ? 'negative' : ''}>{summary.net >= 0 ? '+' : ''}{money.format(summary.net)}</strong><span>{summary.net >= 0 ? '范围内有结余' : '支出高于收入'}</span></article></section>
@@ -306,15 +337,11 @@ function GranularitySwitch({ value, onChange, label }: { value: DashboardGranula
   return <div className="granularity-switch" role="group" aria-label={label}>{([['day', '日'], ['week', '周'], ['month', '月']] as const).map(([item, text]) => <button key={item} type="button" aria-pressed={value === item} onClick={() => onChange(item)}>{text}</button>)}</div>
 }
 
-function CustomRangePanel(props: {
-  customStart: string; setCustomStart: (value: string) => void; customEnd: string; setCustomEnd: (value: string) => void
-  rangeGranularity: DashboardGranularity; setRangeGranularity: (value: DashboardGranularity) => void
-  calendarYear: number; setCalendarYear: (value: number) => void
-}) {
-  const updateStart = (value: string) => { const [start, unitEnd] = snapDate(value, props.rangeGranularity); props.setCustomStart(start); props.setCustomEnd(unitEnd > props.customEnd ? unitEnd : props.customEnd); props.setCalendarYear(Number(start.slice(0, 4))) }
-  const updateEnd = (value: string) => { const [unitStart, end] = snapDate(value, props.rangeGranularity); props.setCustomEnd(end); props.setCustomStart(unitStart < props.customStart ? unitStart : props.customStart); props.setCalendarYear(Number(unitStart.slice(0, 4))) }
-  const updateGranularity = (value: DashboardGranularity) => { const [start] = snapDate(props.customStart, value); const [, end] = snapDate(props.customEnd, value); props.setRangeGranularity(value); props.setCustomStart(start); props.setCustomEnd(end) }
-  return <section className="custom-range-panel"><header><div><p className="eyebrow">CUSTOM RANGE</p><h2>选择要复盘的时间边界</h2><p>可以直接输入日期，也可以在下方日历点选开始与结束；选择周或月时会自动吸附完整周期。</p></div><GranularitySwitch value={props.rangeGranularity} onChange={updateGranularity} label="范围选择颗粒度" /></header><div className="custom-range-inputs"><label>开始日期<input type="date" min="1900-01-01" max={props.customEnd} value={props.customStart} onChange={(event) => updateStart(event.target.value)} /></label><span>→</span><label>结束日期<input type="date" min={props.customStart} max="2100-12-31" value={props.customEnd} onChange={(event) => updateEnd(event.target.value)} /></label></div><DateRangeCalendar {...props} /></section>
+function CustomRangePanel({ controls }: { controls: TimeRangeControls }) {
+  const updateStart = (value: string) => { const [start, unitEnd] = snapDate(value, controls.rangeGranularity); controls.setCustomStart(start); controls.setCustomEnd(unitEnd > controls.customEnd ? unitEnd : controls.customEnd); controls.setCalendarYear(Number(start.slice(0, 4))) }
+  const updateEnd = (value: string) => { const [unitStart, end] = snapDate(value, controls.rangeGranularity); controls.setCustomEnd(end); controls.setCustomStart(unitStart < controls.customStart ? unitStart : controls.customStart); controls.setCalendarYear(Number(unitStart.slice(0, 4))) }
+  const updateGranularity = (value: DashboardGranularity) => { const [start] = snapDate(controls.customStart, value); const [, end] = snapDate(controls.customEnd, value); controls.setRangeGranularity(value); controls.setCustomStart(start); controls.setCustomEnd(end) }
+  return <section className="custom-range-panel"><header><div><p className="eyebrow">CUSTOM RANGE</p><h2>选择要复盘的时间边界</h2><p>可以直接输入日期，也可以在下方日历点选开始与结束；选择周或月时会自动吸附完整周期。</p></div><GranularitySwitch value={controls.rangeGranularity} onChange={updateGranularity} label="范围选择颗粒度" /></header><div className="custom-range-inputs"><label>开始日期<input type="date" min="1900-01-01" max={controls.customEnd} value={controls.customStart} onChange={(event) => updateStart(event.target.value)} /></label><span>→</span><label>结束日期<input type="date" min={controls.customStart} max="2100-12-31" value={controls.customEnd} onChange={(event) => updateEnd(event.target.value)} /></label></div><DateRangeCalendar controls={controls} /></section>
 }
 
 function dateKey(date: Date) { return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}` }
@@ -331,26 +358,24 @@ function snapDate(value: string, granularity: DashboardGranularity): [string, st
   return [value, value]
 }
 
-function DateRangeCalendar(props: {
-  customStart: string; setCustomStart: (value: string) => void; customEnd: string; setCustomEnd: (value: string) => void
-  rangeGranularity: DashboardGranularity; calendarYear: number; setCalendarYear: (value: number) => void
-}) {
+function DateRangeCalendar({ controls }: { controls: TimeRangeControls }) {
   const [anchor, setAnchor] = useState<string | null>(null)
-  const first = new Date(props.calendarYear, 0, 1)
+  const calendarYear = controls.calendarYear
+  const first = new Date(calendarYear, 0, 1)
   const blanks = Array.from({ length: (first.getDay() + 6) % 7 }, (_, index) => index)
   const days: string[] = []
-  for (const date = new Date(first); date.getFullYear() === props.calendarYear; date.setDate(date.getDate() + 1)) days.push(dateKey(date))
+  for (const date = new Date(first); date.getFullYear() === calendarYear; date.setDate(date.getDate() + 1)) days.push(dateKey(date))
   function choose(value: string) {
-    const [unitStart, unitEnd] = snapDate(value, props.rangeGranularity)
+    const [unitStart, unitEnd] = snapDate(value, controls.rangeGranularity)
     if (!anchor) {
-      props.setCustomStart(unitStart); props.setCustomEnd(unitEnd); setAnchor(unitStart); return
+      controls.setCustomStart(unitStart); controls.setCustomEnd(unitEnd); setAnchor(unitStart); return
     }
-    const [anchorStart, anchorEnd] = snapDate(anchor, props.rangeGranularity)
-    props.setCustomStart(anchorStart < unitStart ? anchorStart : unitStart)
-    props.setCustomEnd(anchorEnd > unitEnd ? anchorEnd : unitEnd)
+    const [anchorStart, anchorEnd] = snapDate(anchor, controls.rangeGranularity)
+    controls.setCustomStart(anchorStart < unitStart ? anchorStart : unitStart)
+    controls.setCustomEnd(anchorEnd > unitEnd ? anchorEnd : unitEnd)
     setAnchor(null)
   }
-  return <div className="range-calendar"><div className="range-calendar-head"><button type="button" onClick={() => props.setCalendarYear(props.calendarYear - 1)} aria-label="查看上一年">←</button><strong>{props.calendarYear} 年日历</strong><button type="button" onClick={() => props.setCalendarYear(props.calendarYear + 1)} aria-label="查看下一年">→</button></div><div className="range-month-labels">{Array.from({ length: 12 }, (_, index) => <span key={index}>{index + 1}月</span>)}</div><div className="range-calendar-layout"><div className="weekday-labels"><span>一</span><span>三</span><span>五</span><span>日</span></div><div className="range-calendar-cells">{blanks.map((item) => <i key={`blank-${item}`} />)}{days.map((day) => <button type="button" key={day} aria-label={`选择 ${day}`} title={day} className={`${day >= props.customStart && day <= props.customEnd ? 'in-range ' : ''}${day === props.customStart || day === props.customEnd ? 'boundary' : ''}`} onClick={() => choose(day)} />)}</div></div><p>{anchor ? '请选择结束周期' : '点击任意日期开始新范围，再点击一次确定结束范围'}</p></div>
+  return <div className="range-calendar"><div className="range-calendar-head"><button type="button" onClick={() => controls.setCalendarYear(calendarYear - 1)} aria-label="查看上一年">←</button><strong>{calendarYear} 年日历</strong><button type="button" onClick={() => controls.setCalendarYear(calendarYear + 1)} aria-label="查看下一年">→</button></div><div className="range-month-labels">{Array.from({ length: 12 }, (_, index) => <span key={index}>{index + 1}月</span>)}</div><div className="range-calendar-layout"><div className="weekday-labels"><span>一</span><span>三</span><span>五</span><span>日</span></div><div className="range-calendar-cells">{blanks.map((item) => <i key={`blank-${item}`} />)}{days.map((day) => <button type="button" key={day} aria-label={`选择 ${day}`} title={day} className={`${day >= controls.customStart && day <= controls.customEnd ? 'in-range ' : ''}${day === controls.customStart || day === controls.customEnd ? 'boundary' : ''}`} onClick={() => choose(day)} />)}</div></div><p>{anchor ? '请选择结束周期' : '点击任意日期开始新范围，再点击一次确定结束范围'}</p></div>
 }
 
 function MonthRail({ month, setMonth }: { month: string; setMonth: (value: string) => void }) {
@@ -379,7 +404,7 @@ function HeatmapCard({ title, tone, points, year }: { title: string; tone: 'expe
 }
 
 function AnnotationQueuePage(props: {
-  month: string; setMonth: (value: string) => void; data: DashboardData | null
+  range: TimeRangeControls; data: DashboardData | null
   transactions: Transaction[]; total: number; loading: boolean
   category: string; setCategory: (value: string) => void; channel: string; setChannel: (value: string) => void
   query: string; setQuery: (value: string) => void; queryMode: FilterMode; setQueryMode: (value: FilterMode) => void
@@ -388,6 +413,7 @@ function AnnotationQueuePage(props: {
 }) {
   const [filterPanelOpen, setFilterPanelOpen] = useState(false)
   const [draftFilters, setDraftFilters] = useState<TransactionFilter[]>(props.filters)
+  const { mode, month, year, customStart, customEnd } = props.range
   const allSelected = props.transactions.length > 0 && props.transactions.every((item) => props.selectedIds.includes(item.id))
   const categoryOptions = [...new Set([...(props.data?.categories.map((item) => item.name) ?? []), ...props.transactions.map((item) => item.category)])].filter((item) => item !== '未分类')
   const channelOptions = [...new Set([...(props.data?.channels.map((item) => item.name) ?? []), ...props.transactions.map((item) => item.channel)])].filter((item) => item !== '未识别')
@@ -398,12 +424,12 @@ function AnnotationQueuePage(props: {
     props.setSelectedIds(props.selectedIds.includes(id) ? props.selectedIds.filter((item) => item !== id) : [...props.selectedIds, id])
   }
   const filtered = Boolean(props.query || props.category || props.channel || props.filters.length)
-  const dateRangeActive = props.filters.some((item) => item.field === 'transaction_time')
+  const rangeMeta = mode === 'month' ? month.replace('-', '.') : mode === 'year' ? String(year) : `${customStart.replaceAll('-', '.')}—${customEnd.replaceAll('-', '.')}`
   const clearFilters = () => { props.setQuery(''); props.setQueryMode('include'); props.setCategory(''); props.setChannel(''); props.setFilters([]) }
   const openFilters = () => { setDraftFilters(props.filters); setFilterPanelOpen(true) }
   return <>
-    {dateRangeActive ? <section className="date-filter-rail" aria-label="日期高级筛选范围"><div><span>CUSTOM RANGE</span><strong>日期条件已接管月份范围</strong></div><button className="button secondary" onClick={() => props.setFilters(props.filters.filter((item) => item.field !== 'transaction_time'))}>恢复月份快捷范围</button></section> : <MonthRail month={props.month} setMonth={props.setMonth} />}
-    <section className="annotation-page-heading"><div><p className="eyebrow">REVIEW QUEUE / {dateRangeActive ? 'CUSTOM RANGE' : props.month.replace('-', '.')}</p><h1>先筛出一类，再一次标完</h1><p>模糊搜索、字段包含或排除、日期和金额范围彼此独立；组合后只处理真正匹配的流水。</p></div><div className="queue-count"><span>{filtered ? '当前匹配' : '当前待办'}</span><strong>{props.total}</strong><small>笔流水</small></div></section>
+    <TimeRangeSelector controls={props.range} />
+    <section className="annotation-page-heading"><div><p className="eyebrow">REVIEW QUEUE / {rangeMeta}</p><h1>先筛出一类，再一次标完</h1><p>年度、月度、自定义范围与模糊搜索、高级筛选彼此独立；组合后只处理真正匹配的流水。</p></div><div className="queue-count"><span>{filtered ? '当前匹配' : '当前待办'}</span><strong>{props.total}</strong><small>笔流水</small></div></section>
     <section className="annotation-workspace" aria-label="待标注流水">
       <div className="annotation-toolbar">
         <label className="search-field"><span>全字段模糊搜索</span><div className="search-composer"><select aria-label="模糊搜索模式" value={props.queryMode} onChange={(event) => props.setQueryMode(event.target.value as FilterMode)}><option value="include">包含</option><option value="exclude">排除</option></select><input aria-label="搜索待标注流水" value={props.query} onChange={(event) => props.setQuery(event.target.value)} placeholder="搜索全部清洗字段" /></div></label>
@@ -411,7 +437,7 @@ function AnnotationQueuePage(props: {
         <label><span>有效渠道</span><select value={props.channel} onChange={(event) => props.setChannel(event.target.value)}><option value="">全部渠道</option>{channelOptions.map((item) => <option key={item}>{item}</option>)}</select></label>
         <button className="button secondary advanced-filter-trigger" onClick={openFilters}>高级筛选{props.filters.length ? ` (${props.filters.length})` : ''}</button>
       </div>
-      {(props.filters.length > 0 || filtered) && <div className="active-filter-row"><div>{props.filters.map((item, index) => <button key={`${item.field}-${index}`} onClick={() => props.setFilters(props.filters.filter((_, itemIndex) => itemIndex !== index))}>{filterDescription(item)} <span>×</span></button>)}{dateRangeActive && <small>日期条件已接管月份快捷范围</small>}</div><button className="clear-filters" onClick={clearFilters}>清除全部筛选</button></div>}
+      {(props.filters.length > 0 || filtered) && <div className="active-filter-row"><div>{props.filters.map((item, index) => <button key={`${item.field}-${index}`} onClick={() => props.setFilters(props.filters.filter((_, itemIndex) => itemIndex !== index))}>{filterDescription(item)} <span>×</span></button>)}</div><button className="clear-filters" onClick={clearFilters}>清除全部筛选</button></div>}
       <div className={`selection-dock ${props.selectedIds.length ? 'active' : ''}`} role="status">
         <div><b>{props.selectedIds.length ? `已选 ${props.selectedIds.length} 笔` : '先搜索，再选择相似流水'}</b><span>{props.selectedIds.length ? '将为这些流水保存完全相同的人工标注' : '可逐笔处理，也可全选当前搜索结果'}</span></div>
         {props.selectedIds.length > 0 && <div><button className="button ghost" onClick={() => props.setSelectedIds([])}>取消选择</button><button className="button primary" onClick={props.onBatchAnnotate}>统一标注 {props.selectedIds.length} 笔</button></div>}
