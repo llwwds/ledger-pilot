@@ -154,6 +154,74 @@ def test_rule_prefill_manual_override_dashboard_and_transactions(client: TestCli
     assert cleared.json()["transaction"]["labelSource"] == "manual"
 
 
+def test_rule_amount_range_and_scope_gate_matches(client: TestClient) -> None:
+    _import_wechat(client)
+    manual = client.post("/api/transactions/manual", json={
+        "transaction_time": "2026-07-20 19:00:00", "direction": "支出", "amount": "32.00",
+        "counterparty": "美团", "summary": "聚餐加菜",
+    })
+    assert manual.status_code == 201, manual.text
+    extra = client.post("/api/transactions/manual", json={
+        "transaction_time": "2026-07-21 12:00:00", "direction": "支出", "amount": "8.00",
+        "counterparty": "美团", "summary": "工作餐",
+    })
+    assert extra.status_code == 201, extra.text
+
+    catalog = client.get("/api/label-catalog").json()
+    expense = next(dimension for dimension in catalog if dimension["key"] == "expense_category")
+    food = next(label for label in expense["labels"] if label["name"] == "餐饮")
+    transport = next(label for label in expense["labels"] if label["name"] == "交通")
+
+    invalid = client.post("/api/rules", json={
+        "name": "上下限颠倒", "counterparty_exact": "美团", "label_ids": [food["id"]],
+        "amount_min": "50.00", "amount_max": "20.00",
+    })
+    assert invalid.status_code == 422
+
+    big = client.post("/api/rules", json={
+        "name": "美团聚餐档", "counterparty_exact": "美团", "label_ids": [food["id"]],
+        "amount_min": "20.00", "amount_max": "50.00", "amount_scope": "inside",
+    })
+    assert big.status_code == 201, big.text
+    assert big.json()["amountMin"] == 20.0
+    assert big.json()["amountMax"] == 50.0
+    assert big.json()["amountScope"] == "inside"
+
+    small = client.post("/api/rules", json={
+        "name": "美团非小额", "counterparty_exact": "美团", "label_ids": [transport["id"]],
+        "amount_min": "10.00", "amount_max": "15.00", "amount_scope": "outside",
+    })
+    assert small.status_code == 201, small.text
+
+    items = client.get("/api/transactions", params={"month": "2026-07"}).json()["items"]
+    four = next(item for item in items if item["merchant"] == "美团" and item["amount"] == 4.0)
+    eight = next(item for item in items if item["merchant"] == "美团" and item["amount"] == 8.0)
+    thirty_two = next(item for item in items if item["merchant"] == "美团" and item["amount"] == 32.0)
+
+    big_applied = client.post(f"/api/rules/{big.json()['id']}/apply")
+    assert big_applied.status_code == 200, big_applied.text
+    assert big_applied.json()["matched"] == 1
+
+    # 4 元和 8 元都不在大额区间内，只有 32 元命中“包括范围内”的规则。
+    four_annotation = client.get(f"/api/transactions/{four['id']}/annotation").json()
+    assert food["id"] not in [item["id"] for item in four_annotation["assignments"]["rule"]]
+    large_annotation = client.get(f"/api/transactions/{thirty_two['id']}/annotation").json()
+    assert food["id"] in [item["id"] for item in large_annotation["assignments"]["rule"]]
+
+    small_applied = client.post(f"/api/rules/{small.json()['id']}/apply")
+    assert small_applied.status_code == 200, small_applied.text
+    # 4、8、32 元都在 10–15 元区间之外；32 元建议阶段按规则顺序优先命中大额规则。
+    assert small_applied.json()["matched"] == 3
+
+    # “不包括范围内”命中 10–15 元之外的 4 元和 8 元，不命中区间内的 32 元。
+    four_after = client.get(f"/api/transactions/{four['id']}/annotation").json()
+    assert transport["id"] in [item["id"] for item in four_after["assignments"]["rule"]]
+    eight_after = client.get(f"/api/transactions/{eight['id']}/annotation").json()
+    assert transport["id"] in [item["id"] for item in eight_after["assignments"]["rule"]]
+    large_after = client.get(f"/api/transactions/{thirty_two['id']}/annotation").json()
+    assert transport["id"] not in [item["id"] for item in large_after["assignments"]["rule"]]
+
+
 def test_batch_annotation_is_atomic_and_removes_completed_items_from_pending_queue(client: TestClient) -> None:
     _import_wechat(client)
     catalog = client.get("/api/label-catalog").json()

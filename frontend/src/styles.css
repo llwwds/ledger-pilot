@@ -332,6 +332,13 @@ footer span { font-family: "SFMono-Regular", Consolas, monospace; letter-spacing
 .rule-trigger-head b { font: 600 10px "SFMono-Regular", Consolas, monospace; color: var(--blue); }
 .rule-label-trigger small { color: var(--ink-soft); font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
 .rule-form-note { margin: 10px 0 16px; color: var(--ink-soft); font-size: 11px; line-height: 1.7; }
+.rule-amount { margin: 14px 0; padding: 12px; border: 1px solid var(--line); }
+.rule-amount legend { padding: 0 6px; font: 600 10px "SFMono-Regular", Consolas, monospace; color: var(--red); }
+.rule-amount-row { display: flex; align-items: end; gap: 8px; }
+.rule-amount-row > span { padding-bottom: 10px; color: var(--ink-soft); font-size: 11px; }
+.rule-amount-row select { width: auto; flex: 0 0 auto; }
+.rule-amount-bound { display: grid; gap: 5px; flex: 1; min-width: 0; color: var(--ink-soft); font-size: 10px; }
+.rule-amount > small { display: block; margin-top: 8px; color: var(--red); font-size: 10px; }
 .rule-list > h2 { display: flex; justify-content: space-between; }
 .rule-list article { display: flex; justify-content: space-between; gap: 18px; padding: 18px 0; border-top: 1px solid var(--line); }
 .rule-list h3 { margin: 5px 0; font: 500 18px Georgia, "Songti SC", serif; }

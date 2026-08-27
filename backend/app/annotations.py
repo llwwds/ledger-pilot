@@ -110,11 +110,23 @@ def label_catalog(session: Session) -> list[dict]:
     return result
 
 
-def rule_conditions_match(rule: MerchantRule, transaction: Transaction) -> bool:
-    """条件级匹配：平台等附加条件；金额范围条件由后续版本扩展。"""
-    if rule.source_platform and rule.source_platform != transaction.source_platform:
+def rule_amount_in_range(rule: MerchantRule, transaction: Transaction) -> bool:
+    amount = transaction.amount
+    if rule.amount_min is not None and amount < rule.amount_min:
+        return False
+    if rule.amount_max is not None and amount > rule.amount_max:
         return False
     return True
+
+
+def rule_conditions_match(rule: MerchantRule, transaction: Transaction) -> bool:
+    """条件级匹配：平台限制与可选金额范围；交易对方名称由调用方先行精确比对。"""
+    if rule.source_platform and rule.source_platform != transaction.source_platform:
+        return False
+    if rule.amount_min is None and rule.amount_max is None:
+        return True
+    in_range = rule_amount_in_range(rule, transaction)
+    return in_range if (rule.amount_scope or "inside") == "inside" else not in_range
 
 
 def _matched_rule(session: Session, transaction: Transaction) -> MerchantRule | None:

@@ -310,14 +310,20 @@ describe('App', () => {
     const dimension = labelDimension()
     let savedRules: Array<Record<string, unknown>> = []
     const applyCalls: string[] = []
+    const ruleBodies: Array<Record<string, unknown>> = []
     vi.stubGlobal('fetch', vi.fn().mockImplementation((input: string, init?: RequestInit) => {
       const url = String(input)
       const method = String(init?.method ?? 'GET')
       if (url.includes('/api/label-catalog')) return response([dimension])
       if (url.endsWith('/api/rules') && method === 'GET') return response(savedRules)
       if (url.endsWith('/api/rules') && method === 'POST') {
-        const body = JSON.parse(String(init?.body)) as { name: string; label_ids: number[] }
-        const created = { id: 7, name: body.name, counterpartyExact: '米村拌饭', labelIds: body.label_ids, enabled: true, appliedAt: null }
+        const body = JSON.parse(String(init?.body)) as { name: string; label_ids: number[]; amount_min?: string; amount_max?: string; amount_scope?: string }
+        ruleBodies.push(JSON.parse(String(init?.body)))
+        const created = {
+          id: 7, name: body.name, counterpartyExact: '米村拌饭', labelIds: body.label_ids, enabled: true, appliedAt: null,
+          amountMin: body.amount_min ? Number(body.amount_min) : null, amountMax: body.amount_max ? Number(body.amount_max) : null,
+          amountScope: body.amount_scope ?? 'inside',
+        }
         savedRules = [created]
         return response(created)
       }
@@ -340,11 +346,15 @@ describe('App', () => {
     expect(within(picker).getByRole('checkbox', { name: '餐饮' })).toBeChecked()
     fireEvent.click(within(picker).getByRole('button', { name: '完成（已选 1 个标签）' }))
 
+    fireEvent.change(screen.getByLabelText('金额下限'), { target: { value: '20' } })
+    fireEvent.change(screen.getByLabelText('金额上限'), { target: { value: '50' } })
     fireEvent.change(screen.getByLabelText('规则名称'), { target: { value: '米村拌饭' } })
     fireEvent.change(screen.getByLabelText('交易对方完整名称'), { target: { value: '米村拌饭' } })
     fireEvent.click(screen.getByRole('button', { name: '创建规则' }))
 
     expect(await screen.findByText('待应用')).toBeInTheDocument()
+    expect(ruleBodies[0]).toMatchObject({ name: '米村拌饭', label_ids: [1], amount_min: '20', amount_max: '50', amount_scope: 'inside' })
+    expect(screen.getByText('金额限 20–50 元')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '应用到已有流水' })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '应用到已有流水' }))
 
@@ -352,6 +362,44 @@ describe('App', () => {
     expect(screen.getByText('生效中')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '应用到已有流水' })).not.toBeInTheDocument()
     expect(applyCalls).toHaveLength(1)
+  })
+
+  it('金额范围包括或不包括方式都能随规则提交', async () => {
+    const ruleBodies: Array<Record<string, unknown>> = []
+    let savedRules: Array<Record<string, unknown>> = []
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((input: string, init?: RequestInit) => {
+      const url = String(input)
+      const method = String(init?.method ?? 'GET')
+      if (url.includes('/api/label-catalog')) return response([labelDimension()])
+      if (url.endsWith('/api/rules') && method === 'GET') return response(savedRules)
+      if (url.endsWith('/api/rules') && method === 'POST') {
+        ruleBodies.push(JSON.parse(String(init?.body)))
+        const body = JSON.parse(String(init?.body)) as { name: string; amount_min?: string; amount_max?: string; amount_scope?: string }
+        savedRules = [{
+          id: 9, name: body.name, counterpartyExact: '瑞幸', labelIds: [1], enabled: true, appliedAt: null,
+          amountMin: body.amount_min ? Number(body.amount_min) : null, amountMax: body.amount_max ? Number(body.amount_max) : null,
+          amountScope: body.amount_scope ?? 'inside',
+        }]
+        return response(savedRules[0])
+      }
+      if (url.includes('/api/heatmaps')) return response({ year: 2026, expense: [], income: [] })
+      return response({ summary: { income: 0, expense: 0, net: 0 }, trend: [], categories: [], channels: [], distributions: [], recent: [] })
+    }))
+
+    render(<App />)
+    fireEvent.click(screen.getByRole('button', { name: '预填规则' }))
+    await screen.findByRole('heading', { name: '新建精确规则' })
+
+    fireEvent.change(screen.getByLabelText('金额下限'), { target: { value: '5' } })
+    fireEvent.change(screen.getByLabelText('金额上限'), { target: { value: '15' } })
+    fireEvent.change(screen.getByLabelText('金额范围方式'), { target: { value: 'outside' } })
+    fireEvent.change(screen.getByLabelText('规则名称'), { target: { value: '小额排除' } })
+    fireEvent.change(screen.getByLabelText('交易对方完整名称'), { target: { value: '瑞幸' } })
+    fireEvent.click(screen.getByRole('button', { name: '创建规则' }))
+
+    expect(await screen.findByText('待应用')).toBeInTheDocument()
+    expect(ruleBodies[0]).toMatchObject({ amount_min: '5', amount_max: '15', amount_scope: 'outside' })
+    expect(screen.getByText('金额不在 5–15 元内')).toBeInTheDocument()
   })
 })
 

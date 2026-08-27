@@ -160,6 +160,11 @@ class LabelPatch(BaseModel):
     enabled: bool | None = None
 
 
+def _validate_amount_range(min_value: Decimal | None, max_value: Decimal | None) -> None:
+    if min_value is not None and max_value is not None and min_value > max_value:
+        raise HTTPException(status_code=422, detail="金额范围下限不能大于上限")
+
+
 class RuleCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str = Field(min_length=1, max_length=96)
@@ -168,6 +173,9 @@ class RuleCreate(BaseModel):
     label_ids: list[int] = []
     notes: str | None = None
     enabled: bool = True
+    amount_min: Decimal | None = Field(None, gt=0, max_digits=14, decimal_places=2)
+    amount_max: Decimal | None = Field(None, gt=0, max_digits=14, decimal_places=2)
+    amount_scope: Literal["inside", "outside"] = "inside"
 
 
 class RulePatch(BaseModel):
@@ -178,6 +186,9 @@ class RulePatch(BaseModel):
     label_ids: list[int] | None = None
     notes: str | None = None
     enabled: bool | None = None
+    amount_min: Decimal | None = Field(None, gt=0, max_digits=14, decimal_places=2)
+    amount_max: Decimal | None = Field(None, gt=0, max_digits=14, decimal_places=2)
+    amount_scope: Literal["inside", "outside"] | None = None
 
 
 class AnnotationSave(BaseModel):
@@ -213,14 +224,16 @@ def _migrate_sqlite_schema(engine: Engine) -> None:
     if not inspector.has_table("merchant_rules"):
         return
     columns = {column["name"] for column in inspector.get_columns("merchant_rules")}
-    additions: dict[str, str] = {}
-    if "applied_at" not in columns:
-        additions["applied_at"] = (
-            "DATETIME",
-            "UPDATE merchant_rules SET applied_at = CURRENT_TIMESTAMP WHERE applied_at IS NULL",
-        )
+    additions: dict[str, tuple[str, str | None]] = {
+        "applied_at": ("DATETIME", "UPDATE merchant_rules SET applied_at = CURRENT_TIMESTAMP WHERE applied_at IS NULL"),
+        "amount_min": ("NUMERIC(14,2)", None),
+        "amount_max": ("NUMERIC(14,2)", None),
+        "amount_scope": ("VARCHAR(8) NOT NULL DEFAULT 'inside'", None),
+    }
     with engine.begin() as connection:
         for name, (ddl, backfill) in additions.items():
+            if name in columns:
+                continue
             connection.execute(text(f"ALTER TABLE merchant_rules ADD COLUMN {name} {ddl}"))
             if backfill:
                 connection.execute(text(backfill))
@@ -375,6 +388,9 @@ def _rule_item(rule: MerchantRule) -> dict:
         "labelIds": json.loads(rule.label_ids_json or "[]"), "notes": rule.notes,
         "enabled": rule.enabled,
         "appliedAt": rule.applied_at.isoformat() if rule.applied_at else None,
+        "amountMin": _money(rule.amount_min) if rule.amount_min is not None else None,
+        "amountMax": _money(rule.amount_max) if rule.amount_max is not None else None,
+        "amountScope": rule.amount_scope or "inside",
     }
 
 
@@ -429,7 +445,7 @@ def create_app(*, database_url: str | None = None, data_root: str | Path | None 
         yield
         engine.dispose()
 
-    application = FastAPI(title="Ledger Pilot API", version="1.7.1", lifespan=lifespan)
+    application = FastAPI(title="Ledger Pilot API", version="1.8.0", lifespan=lifespan)
     application.state.engine = engine
     application.state.data_root = resolved_data_root
     origins = list(settings.cors_origins)
@@ -577,10 +593,12 @@ def create_app(*, database_url: str | None = None, data_root: str | Path | None 
 
     @application.post("/api/rules", status_code=201)
     def create_rule(body: RuleCreate, session: Session = Depends(session_dependency)) -> dict:
+        _validate_amount_range(body.amount_min, body.amount_max)
         ids = _validate_rule_labels(session, body.label_ids)
         rule = MerchantRule(name=body.name, source_platform=body.source_platform,
             counterparty_exact=body.counterparty_exact, counterparty_normalized=normalize_exact(body.counterparty_exact),
-            label_ids_json=json.dumps(ids), notes=body.notes, enabled=body.enabled)
+            label_ids_json=json.dumps(ids), notes=body.notes, enabled=body.enabled,
+            amount_min=body.amount_min, amount_max=body.amount_max, amount_scope=body.amount_scope)
         session.add(rule); session.flush(); audit(session, "rule_created", "merchant_rule", rule.id, _rule_item(rule)); session.commit()
         return _rule_item(rule)
 
@@ -612,6 +630,7 @@ def create_app(*, database_url: str | None = None, data_root: str | Path | None 
         if "counterparty_exact" in changes:
             rule.counterparty_exact = changes.pop("counterparty_exact"); rule.counterparty_normalized = normalize_exact(rule.counterparty_exact)
         for key, value in changes.items(): setattr(rule, key, value)
+        _validate_amount_range(rule.amount_min, rule.amount_max)
         rule.updated_at = utc_now(); session.execute(delete(TransactionLabelAssignment).where(TransactionLabelAssignment.source == "rule"))
         audit(session, "rule_updated", "merchant_rule", rule.id, _rule_item(rule)); session.commit(); return _rule_item(rule)
 

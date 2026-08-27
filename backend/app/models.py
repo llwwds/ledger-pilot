@@ -138,6 +138,10 @@ class MerchantRule(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     # NULL 表示规则尚未应用到任何数据，不会产生建议；应用一次后记录时间并保持生效。
     applied_at: Mapped[datetime | None] = mapped_column(DateTime)
+    # 金额范围（可选）：绝对金额闭区间；amount_scope 为 inside 时只匹配范围内，outside 时只匹配范围外。
+    amount_min: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+    amount_max: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+    amount_scope: Mapped[str] = mapped_column(String(8), default="inside")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
 
