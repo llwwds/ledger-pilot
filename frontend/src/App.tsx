@@ -13,9 +13,6 @@ const compactMoney = new Intl.NumberFormat('zh-CN', { notation: 'compact', maxim
 type View = 'dashboard' | 'annotations' | 'labels' | 'rules'
 type Theme = 'ledger' | 'glass'
 type DashboardMode = DashboardRange['mode']
-type BaselineMetric = 'income' | 'expense' | 'net'
-const BASELINE_METRICS: Array<[BaselineMetric, string]> = [['income', '收入'], ['expense', '支出'], ['net', '净额']]
-const BASELINE_METRIC_LABEL: Record<BaselineMetric, string> = { income: '收入', expense: '支出', net: '净额' }
 const THEME_STORAGE_KEY = 'ledger-pilot-theme'
 const THEME_CHARTS: Record<Theme, { pie: string[]; grid: string; expense: string; expenseFill: string; income: string; net: string }> = {
   ledger: { pie: ['#213640', '#5e7c88', '#94a9ad', '#d29a66', '#c75d50', '#7f6f8d'], grid: '#d5dde0', expense: '#c75d50', expenseFill: '#c75d5022', income: '#526d7b', net: '#7f6f8d' },
@@ -268,7 +265,7 @@ function App() {
       onSubmit={(password) => { const files = pendingArchives; setPendingArchives([]); void handleImport(files, password) }}
     />}
     {manualEntryOpen && <ManualEntryDialog catalog={catalog} onClose={() => setManualEntryOpen(false)} onSaved={handleManualSaved} report={report} />}
-    <footer><span>LEDGER PILOT / V1.9.0</span><p>规则给建议，最终选择由你确认；原始流水永不被标注修改。</p></footer>
+    <footer><span>LEDGER PILOT / V1.10.0</span><p>规则给建议，最终选择由你确认；原始流水永不被标注修改。</p></footer>
   </main>
 }
 
@@ -307,7 +304,6 @@ function Dashboard(props: {
 }) {
   const { theme, data, controls } = props
   const { mode, month, year, customStart, customEnd } = controls
-  const [baselineMetric, setBaselineMetric] = useState<BaselineMetric>('income')
   const chartColors = THEME_CHARTS[theme]
   const summary = data?.summary ?? { income: 0, expense: 0, net: 0 }
   const rangeTitle = mode === 'month' ? monthName(month) : mode === 'year' ? `${year} 年` : `${customStart} 至 ${customEnd}`
@@ -327,7 +323,6 @@ function Dashboard(props: {
         chartColors={chartColors} crossYear={crossYear}
         granularity={props.trendGranularity} setGranularity={props.setTrendGranularity}
         trend={data.trend} baseline={data.baseline}
-        baselineMetric={baselineMetric} setBaselineMetric={setBaselineMetric}
       /><div className="distribution-grid">{distributions.map((distribution, index) => <DistributionPanel key={distribution.dimensionId} index={panelIndex(index + 1)} title={distribution.name} items={distribution.items} colors={chartColors.pie} />)}</div></section>
       <AnnualHeatmaps data={props.heatmaps} year={heatmapYear} loading={props.heatmapLoading} error={props.heatmapError} />
       <LedgerDetailPanel controls={controls} catalog={props.catalog} />
@@ -346,20 +341,25 @@ function TrendPanel(props: {
   crossYear: boolean
   granularity: DashboardGranularity; setGranularity: (value: DashboardGranularity) => void
   trend: TrendPoint[]; baseline?: DashboardBaseline
-  baselineMetric: BaselineMetric; setBaselineMetric: (value: BaselineMetric) => void
 }) {
   const { chartColors, granularity, baseline } = props
   const granularityName = { day: '日', week: '周', month: '月' }[granularity]
   const active = Boolean(baseline && baseline.unitCount > 0)
-  const value = baseline ? baseline[props.baselineMetric] : 0
-  const color = chartColors[props.baselineMetric]
+  const incomeValue = baseline ? baseline.income : 0
+  const expenseValue = baseline ? baseline.expense : 0
   return <article className="panel trend-panel">
     <div className="trend-heading"><PanelHeading index="A" title={`${granularityName}收支轨迹`} meta={`${props.trend.length} 个数据点`} /><GranularitySwitch value={granularity} onChange={props.setGranularity} label="曲线颗粒度" /></div>
     {active && baseline && <div className="baseline-bar">
-      <div className="baseline-switch" role="group" aria-label="选择基线指标"><span>基线指标</span>{BASELINE_METRICS.map(([item, label]) => <button key={item} type="button" aria-pressed={props.baselineMetric === item} onClick={() => props.setBaselineMetric(item)}>{label}</button>)}</div>
-      <p className="baseline-caption"><b>{money.format(value)}</b> / {baseline.unitLabel}均{BASELINE_METRIC_LABEL[props.baselineMetric]}<small>按 {baselineScope(baseline)} 平均</small></p>
+      <ul className="baseline-legend" aria-label="趋势基线说明">
+        <li><i style={{ color: chartColors.income }} aria-hidden="true" /><span>{granularityName}均收入基线</span><b>{money.format(incomeValue)}</b></li>
+        <li><i style={{ color: chartColors.expense }} aria-hidden="true" /><span>{granularityName}均支出基线</span><b>{money.format(expenseValue)}</b></li>
+      </ul>
+      <p className="baseline-caption">按 {baselineScope(baseline)} 平均<small>虚线为当前范围内的对照基线</small></p>
     </div>}
-    {props.trend.length ? <div className="chart-wrap"><ResponsiveContainer width="100%" height="100%"><AreaChart data={props.trend} margin={{ top: 10, right: 4, left: -20, bottom: 0 }}><CartesianGrid stroke={chartColors.grid} strokeDasharray="2 5" vertical={false} /><XAxis dataKey="date" tickLine={false} axisLine={false} tick={{ fontSize: 11 }} tickFormatter={(item: string) => props.crossYear ? (granularity === 'month' ? item.slice(0, 7) : item) : item.slice(5)} /><YAxis tickLine={false} axisLine={false} tick={{ fontSize: 10 }} tickFormatter={(item: number) => compactMoney.format(item)} /><Tooltip formatter={(item) => money.format(Number(item))} /><Area type="monotone" dataKey="expense" name="支出" stroke={chartColors.expense} fill={chartColors.expenseFill} /><Area type="monotone" dataKey="income" name="收入" stroke={chartColors.income} fill="transparent" />{active && <ReferenceLine y={value} stroke={color} strokeDasharray="7 5" strokeWidth={1.5} ifOverflow="extendDomain" label={{ value: `${granularityName}均${BASELINE_METRIC_LABEL[props.baselineMetric]}基线`, position: 'insideTopRight', fill: color, fontSize: 11 }} />}</AreaChart></ResponsiveContainer></div> : <EmptyState text="当前范围还没有收支轨迹" />}
+    {props.trend.length ? <div className="chart-wrap"><ResponsiveContainer width="100%" height="100%"><AreaChart data={props.trend} margin={{ top: 10, right: 4, left: -20, bottom: 0 }}><CartesianGrid stroke={chartColors.grid} strokeDasharray="2 5" vertical={false} /><XAxis dataKey="date" tickLine={false} axisLine={false} tick={{ fontSize: 11 }} tickFormatter={(item: string) => props.crossYear ? (granularity === 'month' ? item.slice(0, 7) : item) : item.slice(5)} /><YAxis tickLine={false} axisLine={false} tick={{ fontSize: 10 }} tickFormatter={(item: number) => compactMoney.format(item)} /><Tooltip formatter={(item) => money.format(Number(item))} /><Area type="monotone" dataKey="expense" name="支出" stroke={chartColors.expense} fill={chartColors.expenseFill} /><Area type="monotone" dataKey="income" name="收入" stroke={chartColors.income} fill="transparent" />{active && <>
+        <ReferenceLine y={incomeValue} stroke={chartColors.income} strokeDasharray="7 5" strokeWidth={1.5} ifOverflow="extendDomain" label={{ value: `${granularityName}均收入基线`, position: 'insideTopRight', fill: chartColors.income, fontSize: 11 }} />
+        <ReferenceLine y={expenseValue} stroke={chartColors.expense} strokeDasharray="3 4" strokeWidth={1.5} ifOverflow="extendDomain" label={{ value: `${granularityName}均支出基线`, position: 'insideBottomRight', fill: chartColors.expense, fontSize: 11 }} />
+      </>}</AreaChart></ResponsiveContainer></div> : <EmptyState text="当前范围还没有收支轨迹" />}
   </article>
 }
 

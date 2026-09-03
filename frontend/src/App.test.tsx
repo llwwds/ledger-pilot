@@ -434,7 +434,7 @@ describe('App', () => {
     expect(screen.getByText('金额不在 5–15 元内')).toBeInTheDocument()
   })
 
-  it('趋势图按颗粒度展示收支基线，并可切换基线指标', async () => {
+  it('趋势图同时展示收入与支出两条基线，数值按颗粒度与时间范围动态计算', async () => {
     stubDashboard({
       baseline: {
         granularity: 'day', unitLabel: '日', unitCount: 28, totalUnits: 31, partial: true,
@@ -443,17 +443,41 @@ describe('App', () => {
     })
     render(<App />)
 
-    expect(await screen.findByText('¥192.11')).toBeInTheDocument()
-    expect(screen.getByText(/日均收入/)).toBeInTheDocument()
+    await screen.findByText('¥192.11')
+    const legend = screen.getByRole('list', { name: '趋势基线说明' })
+    expect(within(legend).getByText('日均收入基线')).toBeInTheDocument()
+    expect(within(legend).getByText('¥192.11')).toBeInTheDocument()
+    expect(within(legend).getByText('日均支出基线')).toBeInTheDocument()
+    expect(within(legend).getByText('¥304.26')).toBeInTheDocument()
     expect(screen.getByText(/已开始的 28 日（共 31 日，区间未走完）/)).toBeInTheDocument()
+    expect(screen.getByText('虚线为当前范围内的对照基线')).toBeInTheDocument()
+  })
 
-    const group = screen.getByRole('group', { name: '选择基线指标' })
-    fireEvent.click(within(group).getByRole('button', { name: '支出' }))
-    expect(screen.getByText('¥304.26')).toBeInTheDocument()
-    expect(screen.getByText(/日均支出/)).toBeInTheDocument()
-    fireEvent.click(within(group).getByRole('button', { name: '净额' }))
-    expect(screen.getByText('-¥112.15')).toBeInTheDocument()
-    expect(screen.getByText(/日均净额/)).toBeInTheDocument()
+  it('基线的平均值与单位随曲线颗粒度切换而重新计算', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((input: string) => {
+      const url = String(input)
+      if (url.includes('/api/label-catalog') || url.endsWith('/api/rules')) return response([])
+      if (url.includes('/api/heatmaps')) return response({ year: 2026, expense: [], income: [] })
+      if (url.includes('/api/transactions/search')) return response({ items: [], total: 0, page: 1, pageSize: 50 })
+      const weekly = url.includes('trend_granularity=week')
+      return response(dashboardPayload({
+        baseline: weekly
+          ? { granularity: 'week', unitLabel: '周', unitCount: 4, totalUnits: 4, partial: false, income: 1344.77, expense: 2129.82, net: -785.05, startDate: '2026-08-01', endDate: '2026-08-31' }
+          : { granularity: 'day', unitLabel: '日', unitCount: 28, totalUnits: 31, partial: true, income: 192.11, expense: 304.26, net: -112.15, startDate: '2026-08-01', endDate: '2026-08-31' },
+      }))
+    }))
+    render(<App />)
+
+    await screen.findByText('¥192.11')
+    expect(within(baselineLegend()).getByText('日均收入基线')).toBeInTheDocument()
+    expect(within(baselineLegend()).getByText('日均支出基线')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '周' }))
+    await screen.findByText('¥1,344.77')
+    expect(within(baselineLegend()).getByText('周均收入基线')).toBeInTheDocument()
+    expect(within(baselineLegend()).getByText('周均支出基线')).toBeInTheDocument()
+    expect(within(baselineLegend()).getByText('¥2,129.82')).toBeInTheDocument()
+    expect(screen.getByText(/按\s*4\s*周\s*平均/)).toBeInTheDocument()
   })
 
   it('看板底部按时间范围拉取明细，年度与自定义折算成交易时间条件', async () => {
@@ -582,6 +606,10 @@ function currentMonth() {
 function currentYearRange() {
   const year = new Date().getFullYear()
   return { min: `${year}-01-01`, max: `${year}-12-31` }
+}
+
+function baselineLegend() {
+  return screen.getByRole('list', { name: '趋势基线说明' })
 }
 
 function dashboardPayload(overrides: Record<string, unknown> = {}) {
