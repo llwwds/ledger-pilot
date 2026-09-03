@@ -1,22 +1,25 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Area, AreaChart, CartesianGrid, Cell, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
+import { Area, AreaChart, CartesianGrid, Cell, Pie, PieChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import {
   applyRule, createDimension, createLabel, createManualTransaction, createRule, deleteDimension, deleteLabel, deleteRule,
   getAnnotation, getDashboard, getHeatmaps, getLabelCatalog, getRules, importStatements, searchTransactions,
   saveAnnotation, saveBatchAnnotations, updateDimension, updateLabel, updateRule,
 } from './api'
-import type { AnnotationData, DashboardData, DashboardGranularity, DashboardRange, DistributionItem, FilterMode, HeatmapData, HeatmapPoint, LabelDimension, LabelNode, ManualTransactionInput, MerchantRule, Transaction, TransactionFilter } from './types'
-import { defaultOperator, emptyFilter, filterDescription, filterField, NORMALIZED_FILTER_FIELDS, serializeFilter } from './transactionFilters'
+import type { AnnotationData, DashboardBaseline, DashboardData, DashboardGranularity, DashboardRange, DistributionItem, FilterMode, HeatmapData, HeatmapPoint, LabelDimension, LabelNode, ManualTransactionInput, MerchantRule, Transaction, TransactionFilter, TransactionLabelFilter, TrendPoint } from './types'
+import { defaultOperator, emptyFilter, emptyLabelFilter, filterDescription, filterField, labelFilterDescription, NORMALIZED_FILTER_FIELDS, serializeFilter } from './transactionFilters'
 
 const money = new Intl.NumberFormat('zh-CN', { style: 'currency', currency: 'CNY' })
 const compactMoney = new Intl.NumberFormat('zh-CN', { notation: 'compact', maximumFractionDigits: 1 })
 type View = 'dashboard' | 'annotations' | 'labels' | 'rules'
 type Theme = 'ledger' | 'glass'
 type DashboardMode = DashboardRange['mode']
+type BaselineMetric = 'income' | 'expense' | 'net'
+const BASELINE_METRICS: Array<[BaselineMetric, string]> = [['income', '收入'], ['expense', '支出'], ['net', '净额']]
+const BASELINE_METRIC_LABEL: Record<BaselineMetric, string> = { income: '收入', expense: '支出', net: '净额' }
 const THEME_STORAGE_KEY = 'ledger-pilot-theme'
-const THEME_CHARTS: Record<Theme, { pie: string[]; grid: string; expense: string; expenseFill: string; income: string }> = {
-  ledger: { pie: ['#213640', '#5e7c88', '#94a9ad', '#d29a66', '#c75d50', '#7f6f8d'], grid: '#d5dde0', expense: '#c75d50', expenseFill: '#c75d5022', income: '#526d7b' },
-  glass: { pie: ['#f0c97a', '#82aee8', '#8ed7bd', '#c19ae8', '#ef8e88', '#8d9ebd'], grid: 'rgba(183, 205, 238, .18)', expense: '#f2c879', expenseFill: 'rgba(242, 200, 121, .18)', income: '#8ed7bd' },
+const THEME_CHARTS: Record<Theme, { pie: string[]; grid: string; expense: string; expenseFill: string; income: string; net: string }> = {
+  ledger: { pie: ['#213640', '#5e7c88', '#94a9ad', '#d29a66', '#c75d50', '#7f6f8d'], grid: '#d5dde0', expense: '#c75d50', expenseFill: '#c75d5022', income: '#526d7b', net: '#7f6f8d' },
+  glass: { pie: ['#f0c97a', '#82aee8', '#8ed7bd', '#c19ae8', '#ef8e88', '#8d9ebd'], grid: 'rgba(183, 205, 238, .18)', expense: '#f2c879', expenseFill: 'rgba(242, 200, 121, .18)', income: '#8ed7bd', net: '#c19ae8' },
 }
 
 function currentMonth() { const now = new Date(); return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}` }
@@ -228,7 +231,7 @@ function App() {
 
     <input ref={fileRef} className="sr-only" type="file" multiple accept=".csv,.xlsx,.zip" onChange={(event) => { const files = [...(event.target.files ?? [])]; if (files.some((file) => file.name.toLowerCase().endsWith('.zip'))) setPendingArchives(files); else void handleImport(files) }} />
     {view === 'dashboard' && <Dashboard
-      theme={theme} controls={dashboardControls}
+      theme={theme} controls={dashboardControls} catalog={catalog}
       trendGranularity={trendGranularity} setTrendGranularity={setTrendGranularity}
       data={data} heatmaps={heatmaps} heatmapLoading={heatmapLoading} heatmapError={heatmapError} loading={loading}
       busy={busy} onPickFiles={() => fileRef.current?.click()} onManualEntry={() => setManualEntryOpen(true)}
@@ -265,7 +268,7 @@ function App() {
       onSubmit={(password) => { const files = pendingArchives; setPendingArchives([]); void handleImport(files, password) }}
     />}
     {manualEntryOpen && <ManualEntryDialog catalog={catalog} onClose={() => setManualEntryOpen(false)} onSaved={handleManualSaved} report={report} />}
-    <footer><span>LEDGER PILOT / V1.8.1</span><p>规则给建议，最终选择由你确认；原始流水永不被标注修改。</p></footer>
+    <footer><span>LEDGER PILOT / V1.9.0</span><p>规则给建议，最终选择由你确认；原始流水永不被标注修改。</p></footer>
   </main>
 }
 
@@ -300,16 +303,17 @@ function Dashboard(props: {
   trendGranularity: DashboardGranularity; setTrendGranularity: (value: DashboardGranularity) => void
   data: DashboardData | null; heatmaps: HeatmapData | null; heatmapLoading: boolean; heatmapError: string; loading: boolean
   busy: boolean; onPickFiles: () => void; onManualEntry: () => void
+  catalog: LabelDimension[]
 }) {
   const { theme, data, controls } = props
   const { mode, month, year, customStart, customEnd } = controls
+  const [baselineMetric, setBaselineMetric] = useState<BaselineMetric>('income')
   const chartColors = THEME_CHARTS[theme]
   const summary = data?.summary ?? { income: 0, expense: 0, net: 0 }
   const rangeTitle = mode === 'month' ? monthName(month) : mode === 'year' ? `${year} 年` : `${customStart} 至 ${customEnd}`
   const rangeMeta = mode === 'month' ? month.replace('-', '.') : mode === 'year' ? String(year) : `${customStart.replaceAll('-', '.')}—${customEnd.replaceAll('-', '.')}`
   const heatmapYear = mode === 'month' ? Number(month.slice(0, 4)) : mode === 'year' ? year : Number(customStart.slice(0, 4))
   const crossYear = mode === 'custom' && customStart.slice(0, 4) !== customEnd.slice(0, 4)
-  const granularityName = { day: '日', week: '周', month: '月' }[props.trendGranularity]
   const distributions = data?.distributions ?? (data ? [
     { dimensionId: 'legacy-expense-category', key: 'expense_category', name: '支出分类', items: data.categories },
     { dimensionId: 'legacy-payment-channel', key: 'payment_channel', name: '支付渠道', items: data.channels },
@@ -319,10 +323,44 @@ function Dashboard(props: {
     <section className="page-heading"><div><p className="eyebrow">LEDGER REVIEW / {rangeMeta}</p><h1>{rangeTitle}，逐笔把钱说清楚</h1><p>看板范围与曲线颗粒度彼此独立；规则给出建议，最终结果仍由你确认。</p></div><div className="actions"><button className="button secondary" onClick={props.onManualEntry}>手动记账</button><button className="button primary" onClick={props.onPickFiles} disabled={props.busy}>{props.busy ? '正在合并…' : '导入账单'}</button></div></section>
     {props.loading ? <DashboardSkeleton /> : data ? <>
       <section className="summary-strip"><article className="hero-amount"><p>范围支出</p><strong>{money.format(summary.expense)}</strong><span>共计流出</span></article><article><p>范围收入</p><strong>{money.format(summary.income)}</strong><span>已入账</span></article><article><p>收支净额</p><strong className={summary.net < 0 ? 'negative' : ''}>{summary.net >= 0 ? '+' : ''}{money.format(summary.net)}</strong><span>{summary.net >= 0 ? '范围内有结余' : '支出高于收入'}</span></article></section>
-      <section className="analysis-stack"><article className="panel trend-panel"><div className="trend-heading"><PanelHeading index="A" title={`${granularityName}收支轨迹`} meta={`${data.trend.length} 个数据点`} /><GranularitySwitch value={props.trendGranularity} onChange={props.setTrendGranularity} label="曲线颗粒度" /></div>{data.trend.length ? <div className="chart-wrap"><ResponsiveContainer width="100%" height="100%"><AreaChart data={data.trend} margin={{ top: 10, right: 4, left: -20, bottom: 0 }}><CartesianGrid stroke={chartColors.grid} strokeDasharray="2 5" vertical={false} /><XAxis dataKey="date" tickLine={false} axisLine={false} tick={{ fontSize: 11 }} tickFormatter={(value: string) => crossYear ? (props.trendGranularity === 'month' ? value.slice(0, 7) : value) : value.slice(5)} /><YAxis tickLine={false} axisLine={false} tick={{ fontSize: 10 }} tickFormatter={(value: number) => compactMoney.format(value)} /><Tooltip formatter={(value) => money.format(Number(value))} /><Area type="monotone" dataKey="expense" name="支出" stroke={chartColors.expense} fill={chartColors.expenseFill} /><Area type="monotone" dataKey="income" name="收入" stroke={chartColors.income} fill="transparent" /></AreaChart></ResponsiveContainer></div> : <EmptyState text="当前范围还没有收支轨迹" />}</article><div className="distribution-grid">{distributions.map((distribution, index) => <DistributionPanel key={distribution.dimensionId} index={panelIndex(index + 1)} title={distribution.name} items={distribution.items} colors={chartColors.pie} />)}</div></section>
+      <section className="analysis-stack"><TrendPanel
+        chartColors={chartColors} crossYear={crossYear}
+        granularity={props.trendGranularity} setGranularity={props.setTrendGranularity}
+        trend={data.trend} baseline={data.baseline}
+        baselineMetric={baselineMetric} setBaselineMetric={setBaselineMetric}
+      /><div className="distribution-grid">{distributions.map((distribution, index) => <DistributionPanel key={distribution.dimensionId} index={panelIndex(index + 1)} title={distribution.name} items={distribution.items} colors={chartColors.pie} />)}</div></section>
       <AnnualHeatmaps data={props.heatmaps} year={heatmapYear} loading={props.heatmapLoading} error={props.heatmapError} />
+      <LedgerDetailPanel controls={controls} catalog={props.catalog} />
     </> : <EmptyState text="账本暂时没有当前范围的数据，请先导入账单" />}
   </>
+}
+
+function baselineScope(baseline: DashboardBaseline) {
+  return baseline.partial
+    ? `已开始的 ${baseline.unitCount} ${baseline.unitLabel}（共 ${baseline.totalUnits} ${baseline.unitLabel}，区间未走完）`
+    : `${baseline.unitCount} ${baseline.unitLabel}`
+}
+
+function TrendPanel(props: {
+  chartColors: { grid: string; expense: string; expenseFill: string; income: string; net: string }
+  crossYear: boolean
+  granularity: DashboardGranularity; setGranularity: (value: DashboardGranularity) => void
+  trend: TrendPoint[]; baseline?: DashboardBaseline
+  baselineMetric: BaselineMetric; setBaselineMetric: (value: BaselineMetric) => void
+}) {
+  const { chartColors, granularity, baseline } = props
+  const granularityName = { day: '日', week: '周', month: '月' }[granularity]
+  const active = Boolean(baseline && baseline.unitCount > 0)
+  const value = baseline ? baseline[props.baselineMetric] : 0
+  const color = chartColors[props.baselineMetric]
+  return <article className="panel trend-panel">
+    <div className="trend-heading"><PanelHeading index="A" title={`${granularityName}收支轨迹`} meta={`${props.trend.length} 个数据点`} /><GranularitySwitch value={granularity} onChange={props.setGranularity} label="曲线颗粒度" /></div>
+    {active && baseline && <div className="baseline-bar">
+      <div className="baseline-switch" role="group" aria-label="选择基线指标"><span>基线指标</span>{BASELINE_METRICS.map(([item, label]) => <button key={item} type="button" aria-pressed={props.baselineMetric === item} onClick={() => props.setBaselineMetric(item)}>{label}</button>)}</div>
+      <p className="baseline-caption"><b>{money.format(value)}</b> / {baseline.unitLabel}均{BASELINE_METRIC_LABEL[props.baselineMetric]}<small>按 {baselineScope(baseline)} 平均</small></p>
+    </div>}
+    {props.trend.length ? <div className="chart-wrap"><ResponsiveContainer width="100%" height="100%"><AreaChart data={props.trend} margin={{ top: 10, right: 4, left: -20, bottom: 0 }}><CartesianGrid stroke={chartColors.grid} strokeDasharray="2 5" vertical={false} /><XAxis dataKey="date" tickLine={false} axisLine={false} tick={{ fontSize: 11 }} tickFormatter={(item: string) => props.crossYear ? (granularity === 'month' ? item.slice(0, 7) : item) : item.slice(5)} /><YAxis tickLine={false} axisLine={false} tick={{ fontSize: 10 }} tickFormatter={(item: number) => compactMoney.format(item)} /><Tooltip formatter={(item) => money.format(Number(item))} /><Area type="monotone" dataKey="expense" name="支出" stroke={chartColors.expense} fill={chartColors.expenseFill} /><Area type="monotone" dataKey="income" name="收入" stroke={chartColors.income} fill="transparent" />{active && <ReferenceLine y={value} stroke={color} strokeDasharray="7 5" strokeWidth={1.5} ifOverflow="extendDomain" label={{ value: `${granularityName}均${BASELINE_METRIC_LABEL[props.baselineMetric]}基线`, position: 'insideTopRight', fill: color, fontSize: 11 }} />}</AreaChart></ResponsiveContainer></div> : <EmptyState text="当前范围还没有收支轨迹" />}
+  </article>
 }
 
 function DashboardRangeNav({ mode, setMode }: { mode: DashboardMode; setMode: (value: DashboardMode) => void }) {
@@ -401,6 +439,162 @@ function HeatmapCard({ title, tone, points, year }: { title: string; tone: 'expe
   }
   const level = (value: number) => value <= 0 || max <= 0 ? 0 : Math.max(1, Math.ceil(Math.log1p(value) / Math.log1p(max) * 4))
   return <article className={`heatmap-card ${tone}`}><header><div><p>{title}</p><strong>{money.format(total)}</strong></div><span>{points.length} 个活跃日</span></header>{points.length ? <><div className="heatmap-scroll"><div className="month-labels">{Array.from({ length: 12 }, (_, index) => <span key={index}>{index + 1}月</span>)}</div><div className="heatmap-layout"><div className="weekday-labels"><span>一</span><span>三</span><span>五</span><span>日</span></div><div className="heatmap-cells">{cells.map((cell, index) => cell ? <i key={cell.date} className={`level-${level(cell.point?.value ?? 0)}`} title={`${cell.date} · ${money.format(cell.point?.value ?? 0)} · ${cell.point?.count ?? 0} 笔`} aria-label={`${cell.date}，${money.format(cell.point?.value ?? 0)}，${cell.point?.count ?? 0} 笔`} /> : <i key={`blank-${index}`} className="blank" />)}</div></div></div><footer><span>少</span>{[0, 1, 2, 3, 4].map((item) => <i key={item} className={`level-${item}`} />)}<span>多</span><small>按金额对数分级</small></footer></> : <div className="heatmap-empty">{year} 年没有{tone === 'expense' ? '支出' : '收入'}流水</div>}</article>
+}
+
+interface ActiveFilterChip {
+  key: string
+  description: string
+  mode: FilterMode
+  onToggleMode: () => void
+  onRemove: () => void
+}
+
+const DETAIL_PAGE_SIZE = 50
+
+function LedgerDetailPanel({ controls, catalog }: { controls: TimeRangeControls; catalog: LabelDimension[] }) {
+  const [query, setQuery] = useState('')
+  const [queryMode, setQueryMode] = useState<FilterMode>('include')
+  const [amountMin, setAmountMin] = useState('')
+  const [amountMax, setAmountMax] = useState('')
+  const [amountMode, setAmountMode] = useState<FilterMode>('include')
+  const [labelFilters, setLabelFilters] = useState<TransactionLabelFilter[]>([])
+  const [advancedFilters, setAdvancedFilters] = useState<TransactionFilter[]>([])
+  const [draftLabels, setDraftLabels] = useState<TransactionLabelFilter[]>([])
+  const [draftAdvanced, setDraftAdvanced] = useState<TransactionFilter[]>([])
+  const [labelPickerOpen, setLabelPickerOpen] = useState(false)
+  const [advancedOpen, setAdvancedOpen] = useState(false)
+  const [page, setPage] = useState(1)
+  const [items, setItems] = useState<Transaction[]>([])
+  const [total, setTotal] = useState(0)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+  const requestId = useRef(0)
+  const { mode, month, year, customStart, customEnd } = controls
+
+  const load = useCallback(async () => {
+    const current = ++requestId.current
+    setLoading(true); setError('')
+    // 年度与自定义范围没有单月快捷参数，统一折算成交易时间范围条件，与范围条保持一致。
+    const rangeFilters = mode === 'month' ? [] : [serializeFilter({
+      field: 'transaction_time', mode: 'include', operator: 'range',
+      min: mode === 'year' ? `${year}-01-01` : customStart,
+      max: mode === 'year' ? `${year}-12-31` : customEnd,
+    })]
+    const amountFilters = amountMin || amountMax
+      ? [serializeFilter({ field: 'amount', mode: amountMode, operator: 'range', min: amountMin, max: amountMax })]
+      : []
+    try {
+      const result = await searchTransactions({
+        ...(mode === 'month' ? { month } : {}),
+        ...(query.trim() ? { query: { text: query.trim(), mode: queryMode } } : {}),
+        filters: [...rangeFilters, ...amountFilters, ...advancedFilters.map(serializeFilter)],
+        label_filters: labelFilters,
+        page, page_size: DETAIL_PAGE_SIZE,
+      })
+      if (current !== requestId.current) return
+      setItems(result.items); setTotal(result.total)
+    } catch (reason) {
+      if (current === requestId.current) {
+        setItems([]); setTotal(0)
+        setError(reason instanceof Error ? reason.message : '流水读取失败')
+      }
+    } finally { if (current === requestId.current) setLoading(false) }
+  }, [advancedFilters, amountMax, amountMin, amountMode, customEnd, customStart, labelFilters, mode, month, page, query, queryMode, year])
+
+  useEffect(() => { void load() }, [load])
+  useEffect(() => { setPage(1) }, [advancedFilters, amountMax, amountMin, amountMode, customEnd, customStart, labelFilters, mode, month, query, queryMode, year])
+
+  const labelName = useCallback((id: number) => catalog.flatMap((dimension) => dimension.labels).find((label) => label.id === id)?.name ?? `标签 ${id}`, [catalog])
+  const dimensionName = useCallback((id: string) => catalog.find((dimension) => dimension.id === id)?.name ?? '维度', [catalog])
+  const pageCount = Math.max(1, Math.ceil(total / DETAIL_PAGE_SIZE))
+  const chips: ActiveFilterChip[] = []
+  if (query.trim()) chips.push({
+    key: 'query', description: `搜索“${query.trim()}”`, mode: queryMode,
+    onToggleMode: () => setQueryMode((value) => value === 'include' ? 'exclude' : 'include'),
+    onRemove: () => setQuery(''),
+  })
+  if (amountMin || amountMax) chips.push({
+    key: 'amount', description: `金额 ${amountMin || '不限'} ～ ${amountMax || '不限'}`, mode: amountMode,
+    onToggleMode: () => setAmountMode((value) => value === 'include' ? 'exclude' : 'include'),
+    onRemove: () => { setAmountMin(''); setAmountMax('') },
+  })
+  labelFilters.forEach((filter, index) => chips.push({
+    key: `label-${filter.dimension_id}-${filter.label_id ?? 'none'}`,
+    description: labelFilterDescription(filter, labelName, dimensionName),
+    mode: filter.mode,
+    onToggleMode: () => setLabelFilters((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, mode: item.mode === 'include' ? 'exclude' : 'include' } : item)),
+    onRemove: () => setLabelFilters((current) => current.filter((_, itemIndex) => itemIndex !== index)),
+  }))
+  advancedFilters.forEach((filter, index) => chips.push({
+    key: `advanced-${filter.field}-${index}`,
+    description: filterDescription(filter), mode: filter.mode,
+    onToggleMode: () => setAdvancedFilters((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, mode: item.mode === 'include' ? 'exclude' : 'include' } : item)),
+    onRemove: () => setAdvancedFilters((current) => current.filter((_, itemIndex) => itemIndex !== index)),
+  }))
+  const clearAll = () => { setQuery(''); setQueryMode('include'); setAmountMin(''); setAmountMax(''); setAmountMode('include'); setLabelFilters([]); setAdvancedFilters([]) }
+  const rangeMeta = mode === 'month' ? month.replace('-', '.') : mode === 'year' ? String(year) : `${customStart.replaceAll('-', '.')}—${customEnd.replaceAll('-', '.')}`
+  const summarized = items.reduce((accumulator, item) => {
+    if (item.direction === 'income') accumulator.income += Math.abs(item.amount)
+    else if (item.direction === 'expense') accumulator.expense += Math.abs(item.amount)
+    return accumulator
+  }, { income: 0, expense: 0 })
+
+  return <section className="ledger-detail" aria-label="范围流水明细">
+    <PanelHeading index="E" title="范围流水明细" meta={`${rangeMeta} · ${total} 笔`} />
+    <p className="detail-hint">跟随上方时间范围自动筛选；搜索、金额、标签与高级条件都可以在下方 chip 上单独切换「包含 / 排除」。</p>
+    <div className="detail-toolbar">
+      <label className="search-field"><span>模糊搜索</span><div className="search-composer"><select aria-label="搜索模式" value={queryMode} onChange={(event) => setQueryMode(event.target.value as FilterMode)}><option value="include">包含</option><option value="exclude">排除</option></select><input aria-label="搜索范围内的流水" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索全部清洗字段" /></div></label>
+      <div className="amount-composer"><span>绝对金额</span><div><select aria-label="金额筛选模式" value={amountMode} onChange={(event) => setAmountMode(event.target.value as FilterMode)}><option value="include">包含</option><option value="exclude">排除</option></select><input aria-label="金额下限" type="number" min="0" step="0.01" inputMode="decimal" placeholder="不限" value={amountMin} onChange={(event) => setAmountMin(event.target.value)} /><span>至</span><input aria-label="金额上限" type="number" min="0" step="0.01" inputMode="decimal" placeholder="不限" value={amountMax} onChange={(event) => setAmountMax(event.target.value)} /></div></div>
+      <button className="button secondary" onClick={() => { setDraftLabels(labelFilters); setLabelPickerOpen(true) }}>标签筛选{labelFilters.length ? ` (${labelFilters.length})` : ''}</button>
+      <button className="button secondary" onClick={() => { setDraftAdvanced(advancedFilters); setAdvancedOpen(true) }}>高级筛选{advancedFilters.length ? ` (${advancedFilters.length})` : ''}</button>
+    </div>
+    {chips.length > 0 && <div className="active-filter-row"><div>{chips.map((chip) => <span className={`filter-chip ${chip.mode}`} key={chip.key}><button type="button" className="chip-mode" onClick={chip.onToggleMode} aria-label={`切换为${chip.mode === 'include' ? '排除' : '包含'}：${chip.description}`}>{chip.mode === 'include' ? '包含' : '排除'}</button>{chip.description}<button type="button" className="chip-remove" onClick={chip.onRemove} aria-label={`移除 ${chip.description}`}>×</button></span>)}</div><button className="clear-filters" onClick={clearAll}>清除全部筛选</button></div>}
+    <div className="detail-summary"><span>本页收入<b className="amount income">+{money.format(summarized.income)}</b></span><span>本页支出<b className="amount expense">−{money.format(summarized.expense)}</b></span><span>共 <b>{total}</b> 笔匹配</span></div>
+    {error && <div className="detail-error" role="alert">流水读取失败：{error}</div>}
+    {loading ? <DashboardSkeleton /> : items.length ? <div className="table-wrap detail-table"><table><thead><tr><th>日期</th><th>交易摘要</th><th>标签</th><th>分类</th><th>支付渠道</th><th>金额</th></tr></thead><tbody>{items.map((item) => <tr key={item.id}><td>{item.date.slice(0, 16)}</td><td><strong>{item.merchant}</strong>{item.itemDescription && <small>{item.itemDescription}</small>}</td><td className="label-cell">{item.effectiveLabels.length ? item.effectiveLabels.map((label) => <span className="mini-tag" key={`${item.id}-${label.id}`}>{label.name}</span>) : <span className="mini-tag muted">未打标签</span>}</td><td><span className="tag">{item.category}<i className={item.categorySource}>{item.categorySource === 'manual' ? '人工' : item.categorySource === 'rule' ? '规则' : '未确认'}</i></span></td><td>{item.channel}</td><td className={item.direction === 'expense' ? 'amount expense' : 'amount income'}>{item.direction === 'expense' ? '−' : '+'}{money.format(Math.abs(item.amount))}</td></tr>)}</tbody></table></div> : <div className="queue-empty"><span>⌁</span><h2>{chips.length ? '没有符合当前条件的流水' : '这个时间范围还没有流水'}</h2><p>{chips.length ? '调整或清除部分筛选条件，也可以把某个条件从包含切换为排除。' : '导入账单或切换时间范围后再来查看。'}</p></div>}
+    {total > DETAIL_PAGE_SIZE && <div className="detail-pagination" role="navigation" aria-label="流水分页"><button className="button ghost" disabled={page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>上一页</button><span>第 {page} / {pageCount} 页 · 每页 {DETAIL_PAGE_SIZE} 笔</span><button className="button ghost" disabled={page >= pageCount} onClick={() => setPage((value) => Math.min(pageCount, value + 1))}>下一页</button></div>}
+    {labelPickerOpen && <LabelFilterPicker catalog={catalog} filters={draftLabels} setFilters={setDraftLabels} onClose={() => setLabelPickerOpen(false)} onApply={() => { setLabelFilters(draftLabels); setLabelPickerOpen(false) }} />}
+    {advancedOpen && <AdvancedFilterPanel filters={draftAdvanced} setFilters={setDraftAdvanced} onClose={() => setAdvancedOpen(false)} onApply={() => { setAdvancedFilters(draftAdvanced); setAdvancedOpen(false) }} />}
+  </section>
+}
+
+function findLabelFilter(filters: TransactionLabelFilter[], dimensionId: string, labelId?: number) {
+  return filters.find((filter) => filter.dimension_id === dimensionId
+    && (labelId === undefined ? filter.label_id === undefined : filter.label_id === labelId))
+}
+
+function LabelFilterPicker({ catalog, filters, setFilters, onClose, onApply }: {
+  catalog: LabelDimension[]; filters: TransactionLabelFilter[]
+  setFilters: (value: TransactionLabelFilter[]) => void; onClose: () => void; onApply: () => void
+}) {
+  const dimensions = catalog.filter((dimension) => dimension.enabled)
+  function cycle(dimensionId: string, labelId?: number) {
+    const current = findLabelFilter(filters, dimensionId, labelId)
+    const next: FilterMode | null = !current ? 'include' : current.mode === 'include' ? 'exclude' : null
+    setFilters([
+      ...filters.filter((filter) => !(filter.dimension_id === dimensionId
+        && (labelId === undefined ? filter.label_id === undefined : filter.label_id === labelId))),
+      ...(next ? [{ ...emptyLabelFilter(dimensionId, labelId), mode: next }] : []),
+    ])
+  }
+  function clearDimension(dimensionId: string) {
+    setFilters(filters.filter((filter) => filter.dimension_id !== dimensionId))
+  }
+  const stateOf = (dimensionId: string, labelId?: number) => findLabelFilter(filters, dimensionId, labelId)?.mode
+  return <div className="advanced-filter-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><section className="label-filter-panel" role="dialog" aria-modal="true" aria-labelledby="label-filter-title">
+    <header><div><p className="eyebrow">LABEL CONDITIONS</p><h2 id="label-filter-title">标签筛选</h2><p>点击标签循环切换：未启用 → 包含 → 排除 → 未启用。同一维度内多个「包含」取任一命中，跨维度需同时满足；任何「排除」命中即剔除。</p></div><button className="close-button" onClick={onClose} aria-label="关闭标签筛选">×</button></header>
+    <div className="label-filter-body">{dimensions.map((dimension) => <fieldset key={dimension.id}>
+      <legend>{dimension.name}<small>{dimension.selectionMode === 'multiple' ? '可多选' : '单选'}</small>{filters.some((filter) => filter.dimension_id === dimension.id) && <button type="button" className="dimension-clear" onClick={() => clearDimension(dimension.id)}>清除本维度</button>}</legend>
+      <div className="tri-state-list">
+        {treeOptions(dimension.labels).filter(({ label }) => label.enabled).map(({ label, depth }) => {
+          const state = stateOf(dimension.id, label.id)
+          return <button type="button" key={label.id} className={`tri-state ${state ?? 'off'}`} style={{ marginLeft: depth * 14 }} onClick={() => cycle(dimension.id, label.id)} aria-label={`${label.name}，当前${state === 'include' ? '包含' : state === 'exclude' ? '排除' : '未启用'}`}><i>{state === 'include' ? '包含' : state === 'exclude' ? '排除' : '—'}</i>{label.name}</button>
+        })}
+        <button type="button" className={`tri-state ${stateOf(dimension.id) ?? 'off'}`} onClick={() => cycle(dimension.id)} aria-label={`${dimension.name}未打标签，当前${stateOf(dimension.id) === 'include' ? '包含' : stateOf(dimension.id) === 'exclude' ? '排除' : '未启用'}`}><i>{stateOf(dimension.id) === 'include' ? '包含' : stateOf(dimension.id) === 'exclude' ? '排除' : '—'}</i>未打标签</button>
+      </div>
+    </fieldset>)}{!dimensions.length && <div className="advanced-filter-empty"><span>＋</span><p>还没有启用任何标签维度，请先到标签管理创建。</p></div>}</div>
+    <footer className="advanced-filter-actions"><span className="picker-count">已设 {filters.length} 条标签条件</span><div><button className="button ghost" onClick={onClose}>取消</button><button className="button primary" onClick={onApply}>应用 {filters.length} 条条件</button></div></footer>
+  </section></div>
 }
 
 function AnnotationQueuePage(props: {

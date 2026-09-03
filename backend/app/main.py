@@ -27,7 +27,7 @@ from .annotations import (
 from .database import Base, build_engine, build_session_factory
 from .importers import ExpandedUpload, ImportFormatError, NormalizedTransaction, expand_upload, parse_upload
 from .models import (
-    AuditLog, Label, LabelDimension, MerchantRule, Transaction,
+    AuditLog, Label, LabelDimension, ManualDimensionConfirmation, MerchantRule, Transaction,
     TransactionLabelAssignment, utc_now,
 )
 from .services import persist_import, persist_manual_transaction
@@ -93,11 +93,28 @@ class TransactionSearchFilter(BaseModel):
         return self
 
 
+class TransactionLabelFilter(BaseModel):
+    """按有效标签筛选流水；label_id 为空时表示「该维度尚未打标签」的流水。"""
+
+    model_config = ConfigDict(extra="forbid")
+    label_id: int | None = None
+    dimension_id: str | None = None
+    mode: Literal["include", "exclude"] = "include"
+    include_descendants: bool = True
+
+    @model_validator(mode="after")
+    def validate_target(self) -> "TransactionLabelFilter":
+        if self.label_id is None and not self.dimension_id:
+            raise ValueError("label_id 与 dimension_id 至少提供一个")
+        return self
+
+
 class TransactionSearchRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     month: str | None = None
     query: TransactionSearchQuery | None = None
     filters: list[TransactionSearchFilter] = Field(default_factory=list, max_length=32)
+    label_filters: list[TransactionLabelFilter] = Field(default_factory=list, max_length=64)
     category: str | None = None
     channel: str | None = None
     annotation_status: Literal["pending", "completed"] | None = None
@@ -296,6 +313,82 @@ def _trend_bucket(value: datetime, granularity: Literal["day", "week", "month"])
     return value.date().isoformat()
 
 
+GRANULARITY_UNIT_LABEL = {"day": "日", "week": "周", "month": "月"}
+
+
+def _unit_start(value: datetime, granularity: Literal["day", "week", "month"]) -> datetime:
+    """Return the inclusive start of the calendar unit containing ``value``."""
+    if granularity == "week":
+        monday = value.date() - timedelta(days=value.weekday())
+        return datetime(monday.year, monday.month, monday.day)
+    if granularity == "month":
+        return datetime(value.year, value.month, 1)
+    return datetime(value.year, value.month, value.day)
+
+
+def _next_unit(value: datetime, granularity: Literal["day", "week", "month"]) -> datetime:
+    if granularity == "week":
+        return value + timedelta(days=7)
+    if granularity == "month":
+        index = value.month  # 1-based, so the next month is simply index + 1 before wrapping
+        year = value.year + index // 12
+        month = index % 12 + 1
+        return datetime(year, month, 1)
+    return value + timedelta(days=1)
+
+
+def _baseline_payload(
+    start: datetime | None,
+    end: datetime | None,
+    granularity: Literal["day", "week", "month"],
+    income: float,
+    expense: float,
+    now: datetime | None = None,
+) -> dict[str, object]:
+    """平均每颗粒度单元的收支水平，作为趋势曲线的对照基线。
+
+    分母取时间范围内该颗粒度的单元数。范围尚未走完时（结束时间晚于当前时刻）
+    只统计已经开始或正在进行的单元，避免未来空单元把基线稀释到没有参考意义。
+    """
+    empty = {
+        "granularity": granularity,
+        "unitLabel": GRANULARITY_UNIT_LABEL[granularity],
+        "unitCount": 0,
+        "totalUnits": 0,
+        "partial": False,
+        "income": 0.0,
+        "expense": 0.0,
+        "net": 0.0,
+        "startDate": start.date().isoformat() if start else None,
+        "endDate": None,
+    }
+    if start is None or end is None:
+        return empty
+    reference = now or datetime.now()
+    total_units = 0
+    elapsed_units = 0
+    cursor = _unit_start(start, granularity)
+    while cursor < end:
+        total_units += 1
+        if cursor <= reference:
+            elapsed_units += 1
+        cursor = _next_unit(cursor, granularity)
+    effective_units = max(1, elapsed_units)
+    net = round(income - expense, 2)
+    return {
+        "granularity": granularity,
+        "unitLabel": GRANULARITY_UNIT_LABEL[granularity],
+        "unitCount": effective_units,
+        "totalUnits": total_units,
+        "partial": elapsed_units < total_units,
+        "income": round(income / effective_units, 2),
+        "expense": round(expense / effective_units, 2),
+        "net": round(net / effective_units, 2),
+        "startDate": start.date().isoformat(),
+        "endDate": (end - timedelta(days=1)).date().isoformat(),
+    }
+
+
 def _label_name(effective: dict[str, list[dict]], key: str, fallback: str) -> tuple[str, str]:
     labels = effective.get(key, [])
     return (" / ".join(item["name"] for item in labels), labels[0]["source"]) if labels else (fallback, "unassigned")
@@ -381,6 +474,148 @@ def _matches_global_query(transaction: Transaction, query: TransactionSearchQuer
     return matched if query.mode == "include" else not matched
 
 
+def _effective_label_ids_by_transaction(
+    session: Session, transactions: list[Transaction]
+) -> dict[int, set[int]]:
+    """Batch-resolve effective label ids, mirroring ``transaction_assignments`` semantics."""
+    if not transactions:
+        return {}
+    transaction_ids = [row.id for row in transactions]
+    assignments = session.execute(
+        select(
+            TransactionLabelAssignment.transaction_id,
+            TransactionLabelAssignment.source,
+            Label.id,
+            Label.dimension_id,
+        )
+        .join(Label, TransactionLabelAssignment.label_id == Label.id)
+        .where(TransactionLabelAssignment.transaction_id.in_(transaction_ids))
+    ).all()
+    confirmed = set(session.execute(
+        select(
+            ManualDimensionConfirmation.transaction_id,
+            ManualDimensionConfirmation.dimension_id,
+        ).where(ManualDimensionConfirmation.transaction_id.in_(transaction_ids))
+    ).all())
+    grouped: dict[tuple[int, str], dict[str, list[int]]] = defaultdict(
+        lambda: {"manual": [], "rule": []}
+    )
+    for transaction_id, source, label_id, dimension_id in assignments:
+        grouped[(transaction_id, dimension_id)][source].append(label_id)
+    result: dict[int, set[int]] = {}
+    for (transaction_id, dimension_id), sources in grouped.items():
+        chosen = (
+            sources["manual"]
+            if (transaction_id, dimension_id) in confirmed
+            else sources["rule"]
+        )
+        result.setdefault(transaction_id, set()).update(chosen)
+    return result
+
+
+def _label_descendant_map(session: Session) -> dict[int, set[int]]:
+    """Map every label id to itself plus all of its descendants."""
+    labels = list(session.execute(select(Label.id, Label.parent_id)).all())
+    children: dict[int | None, list[int]] = defaultdict(list)
+    for label_id, parent_id in labels:
+        children[parent_id].append(label_id)
+    resolved: dict[int, set[int]] = {}
+
+    def collect(label_id: int, seen: frozenset[int]) -> set[int]:
+        if label_id in resolved:
+            return resolved[label_id]
+        cycle_guard = seen | {label_id}
+        family = {label_id}
+        for child in children.get(label_id, []):
+            if child not in cycle_guard:
+                family |= collect(child, cycle_guard)
+        resolved[label_id] = family
+        return family
+
+    for label_id, _ in labels:
+        collect(label_id, frozenset())
+    return resolved
+
+
+def _label_dimension_map(session: Session) -> dict[int, str]:
+    return {
+        label_id: dimension_id
+        for label_id, dimension_id in session.execute(select(Label.id, Label.dimension_id)).all()
+    }
+
+
+def _validate_label_filters(session: Session, filters: list[TransactionLabelFilter]) -> None:
+    label_dimensions = _label_dimension_map(session)
+    known_dimensions = set(session.scalars(select(LabelDimension.id)))
+    for condition in filters:
+        if condition.dimension_id and condition.dimension_id not in known_dimensions:
+            raise HTTPException(status_code=422, detail=f"标签维度 {condition.dimension_id} 不存在")
+        if condition.label_id is None:
+            continue
+        dimension_id = label_dimensions.get(condition.label_id)
+        if dimension_id is None:
+            raise HTTPException(status_code=422, detail=f"标签 {condition.label_id} 不存在")
+        if condition.dimension_id and dimension_id != condition.dimension_id:
+            raise HTTPException(status_code=422, detail="标签不属于指定维度")
+
+
+def _matches_label_filters(
+    label_ids: set[int],
+    filters: list[TransactionLabelFilter],
+    descendants: dict[int, set[int]],
+    label_dimensions: dict[int, str],
+) -> bool:
+    """同维度 include 取任一命中，跨维度需同时满足；任何 exclude 命中即剔除。"""
+    if not filters:
+        return True
+    for condition in filters:
+        if condition.mode != "exclude":
+            continue
+        if condition.label_id is None:
+            if condition.dimension_id and not any(
+                label_dimensions.get(label_id) == condition.dimension_id for label_id in label_ids
+            ):
+                return False
+            if condition.dimension_id is None and not label_ids:
+                return False
+        else:
+            targets = (
+                descendants.get(condition.label_id, {condition.label_id})
+                if condition.include_descendants
+                else {condition.label_id}
+            )
+            if label_ids & targets:
+                return False
+    included = [condition for condition in filters if condition.mode == "include"]
+    if not included:
+        return True
+    by_dimension: dict[str, list[TransactionLabelFilter]] = defaultdict(list)
+    for condition in included:
+        dimension_id = (
+            condition.dimension_id
+            or label_dimensions.get(condition.label_id or -1)
+            or "__any__"
+        )
+        by_dimension[dimension_id].append(condition)
+    for conditions in by_dimension.values():
+        matched = False
+        for condition in conditions:
+            if condition.label_id is None:
+                matched = matched or not any(
+                    label_dimensions.get(label_id) == condition.dimension_id for label_id in label_ids
+                )
+            else:
+                targets = (
+                    descendants.get(condition.label_id, {condition.label_id})
+                    if condition.include_descendants
+                    else {condition.label_id}
+                )
+                matched = matched or bool(label_ids & targets)
+        if not matched:
+            return False
+    return True
+
+
 def _rule_item(rule: MerchantRule) -> dict:
     return {
         "id": rule.id, "name": rule.name, "sourcePlatform": rule.source_platform,
@@ -445,7 +680,7 @@ def create_app(*, database_url: str | None = None, data_root: str | Path | None 
         yield
         engine.dispose()
 
-    application = FastAPI(title="Ledger Pilot API", version="1.8.1", lifespan=lifespan)
+    application = FastAPI(title="Ledger Pilot API", version="1.9.0", lifespan=lifespan)
     application.state.engine = engine
     application.state.data_root = resolved_data_root
     origins = list(settings.cors_origins)
@@ -740,6 +975,11 @@ def create_app(*, database_url: str | None = None, data_root: str | Path | None 
         ))
         income = sum(_money(row.amount) for row in rows if row.direction == "收入")
         expense = sum(_money(row.amount) for row in rows if row.direction == "支出")
+        # 没有显式时间边界时（全量看板），基线分母改用流水自身的跨度，避免出现无意义的分母。
+        baseline_start, baseline_end = start, end
+        if rows and (baseline_start is None or baseline_end is None):
+            baseline_start = min(row.transaction_time for row in rows)
+            baseline_end = max(row.transaction_time for row in rows) + timedelta(days=1)
         trend: dict[str, dict[str, float]] = defaultdict(lambda: {"income": 0, "expense": 0})
         categories: dict[str, float] = defaultdict(float); channels: dict[str, float] = defaultdict(float); items = []
         dimension_values: dict[str, dict[str, float]] = {
@@ -771,6 +1011,7 @@ def create_app(*, database_url: str | None = None, data_root: str | Path | None 
         return {
             "summary": {"income": round(income, 2), "expense": round(expense, 2), "net": round(income - expense, 2)},
             "trend": [{"date": day, **values} for day, values in sorted(trend.items())],
+            "baseline": _baseline_payload(baseline_start, baseline_end, trend_granularity, income, expense),
             "categories": [{"name": name, "value": round(value, 2)} for name, value in sorted(categories.items(), key=lambda item: -item[1])],
             "channels": [{"name": name, "value": round(value, 2)} for name, value in sorted(channels.items(), key=lambda item: -item[1])],
             "distributions": [{
@@ -856,6 +1097,21 @@ def create_app(*, database_url: str | None = None, data_root: str | Path | None 
             row for row in rows
             if _matches_normalized_filters(row, body.filters) and _matches_global_query(row, body.query)
         ]
+        if body.label_filters:
+            _validate_label_filters(session, body.label_filters)
+            # 先同步规则建议，保证筛选与列表展示看到的是同一份有效标签。
+            for row in rows:
+                sync_rule_suggestions(session, row)
+            session.flush()
+            effective = _effective_label_ids_by_transaction(session, rows)
+            descendants = _label_descendant_map(session)
+            label_dimensions = _label_dimension_map(session)
+            rows = [
+                row for row in rows
+                if _matches_label_filters(
+                    effective.get(row.id, set()), body.label_filters, descendants, label_dimensions
+                )
+            ]
         items = [_transaction_item(session, row) for row in rows]
         items = [
             item for item in items

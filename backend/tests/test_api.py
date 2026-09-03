@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -9,7 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models import ImportBatch, ImportRecord, Transaction
-from app.main import create_app
+from app.main import _baseline_payload, create_app
 
 from .conftest import make_alipay_csv, make_statement_zip, make_wechat_xlsx
 
@@ -733,3 +734,233 @@ def test_legacy_transaction_get_semantics_remain_available(client: TestClient) -
     })
     assert response.status_code == 200, response.text
     assert [item["transactionId"] for item in response.json()["items"]] == ["wx-1"]
+
+
+@pytest.mark.parametrize("granularity, expected_units, expected_income", [
+    # 2026-01-01 至 2026-03-01（含当天）：日=31+28+1，周=12-29 起的第 10 周尚未开始，月=1/2/3 月。
+    ("day", 60, round(3100 / 60, 2)),
+    ("week", 9, round(3100 / 9, 2)),
+    ("month", 3, round(3100 / 3, 2)),
+])
+def test_baseline_counts_only_units_that_have_started(
+    granularity: str, expected_units: int, expected_income: float
+) -> None:
+    """区间尚未走完时，分母只统计已开始或正在进行的单元。"""
+    baseline = _baseline_payload(
+        datetime(2026, 1, 1), datetime(2027, 1, 1), granularity, 3100.0, 620.0,
+        now=datetime(2026, 3, 1),
+    )
+    assert baseline["granularity"] == granularity
+    assert baseline["unitCount"] == expected_units
+    assert baseline["partial"] is True
+    assert baseline["income"] == expected_income
+    assert baseline["expense"] == round(620 / expected_units, 2)
+    assert baseline["net"] == round(2480 / expected_units, 2)
+
+
+def test_baseline_uses_full_unit_count_for_closed_ranges() -> None:
+    closed = _baseline_payload(
+        datetime(2026, 1, 1), datetime(2027, 1, 1), "day", 3650.0, 0.0, now=datetime(2027, 6, 1)
+    )
+    assert closed["unitCount"] == 365 and closed["totalUnits"] == 365
+    assert closed["partial"] is False
+    assert closed["income"] == 10.0
+
+
+def test_baseline_survives_ranges_entirely_in_the_future() -> None:
+    future = _baseline_payload(
+        datetime(2099, 1, 1), datetime(2100, 1, 1), "month", 0.0, 0.0, now=datetime(2026, 8, 28)
+    )
+    assert future["unitCount"] == 1 and future["totalUnits"] == 12
+    assert future["partial"] is True
+    assert future["income"] == 0.0
+
+
+def test_dashboard_baseline_matches_summary_across_ranges_and_granularities(
+    client: TestClient,
+) -> None:
+    """已结束的范围不受当前日期影响，均值必须等于合计除以完整单元数。"""
+    _manual_transaction(client, "2025-01-15 09:00:00", "收入", "1200.00", "base-in-1")
+    _manual_transaction(client, "2025-02-20 09:00:00", "收入", "600.00", "base-in-2")
+    _manual_transaction(client, "2025-03-05 09:00:00", "支出", "300.00", "base-out-1")
+
+    annual_day = client.get("/api/dashboard", params={"year": 2025, "trend_granularity": "day"}).json()
+    assert annual_day["summary"] == {"income": 1800.0, "expense": 300.0, "net": 1500.0}
+    assert annual_day["baseline"] == {
+        "granularity": "day", "unitLabel": "日", "unitCount": 365, "totalUnits": 365,
+        "partial": False, "income": round(1800 / 365, 2), "expense": round(300 / 365, 2),
+        "net": round(1500 / 365, 2), "startDate": "2025-01-01", "endDate": "2025-12-31",
+    }
+
+    annual_month = client.get("/api/dashboard", params={"year": 2025, "trend_granularity": "month"}).json()
+    assert annual_month["baseline"]["unitCount"] == 12
+    assert annual_month["baseline"]["income"] == 150.0
+
+    annual_week = client.get("/api/dashboard", params={"year": 2025, "trend_granularity": "week"}).json()
+    assert annual_week["baseline"]["unitLabel"] == "周"
+    assert annual_week["baseline"]["unitCount"] == 53
+    assert annual_week["baseline"]["income"] == round(1800 / 53, 2)
+
+    custom = client.get("/api/dashboard", params={
+        "start_date": "2025-01-01", "end_date": "2025-03-31", "trend_granularity": "month",
+    }).json()
+    assert custom["baseline"]["unitCount"] == 3 and custom["baseline"]["totalUnits"] == 3
+    assert custom["baseline"]["income"] == 600.0
+
+
+def test_dashboard_baseline_is_zero_but_still_sized_when_range_has_no_transactions(
+    client: TestClient,
+) -> None:
+    """没有流水时分母仍是范围自身的单元数，只是均值为零，避免基线退化成无意义的值。"""
+    payload = client.get("/api/dashboard", params={"year": 2019, "trend_granularity": "day"}).json()
+    assert payload["summary"] == {"income": 0, "expense": 0, "net": 0}
+    assert payload["baseline"]["unitCount"] == 365
+    assert payload["baseline"]["income"] == 0.0
+    assert payload["baseline"]["expense"] == 0.0
+    assert payload["baseline"]["net"] == 0.0
+
+
+def _prepare_labeled_records(client: TestClient) -> dict:
+    """导入三笔流水并给其中两笔打上已知标签，第三笔保持未标注。"""
+    _import_wechat(client)
+    alipay = client.post(
+        "/api/import",
+        files={"files": ("alipay.csv", make_alipay_csv(), "text/csv")},
+    )
+    assert alipay.status_code == 200, alipay.text
+
+    focus = client.post("/api/label-dimensions", json={"key": "focus", "name": "关注点"}).json()
+    parent = client.post("/api/labels", json={"dimension_id": focus["id"], "name": "餐饮"}).json()
+    child = client.post("/api/labels", json={
+        "dimension_id": focus["id"], "name": "午餐", "parent_id": parent["id"],
+    }).json()
+    traffic = client.post("/api/labels", json={"dimension_id": focus["id"], "name": "交通"}).json()
+    flags = client.post("/api/label-dimensions", json={
+        "key": "flags", "name": "标记", "selection_mode": "multiple",
+    }).json()
+    urgent = client.post("/api/labels", json={"dimension_id": flags["id"], "name": "待核对"}).json()
+    reviewed = client.post("/api/labels", json={"dimension_id": flags["id"], "name": "已复核"}).json()
+
+    def transaction_id(reference: str) -> int:
+        found = _search(client, filters=[{
+            "field": "transaction_id", "mode": "include", "operator": "equals", "value": reference,
+        }])["items"]
+        assert len(found) == 1, found
+        return int(found[0]["id"])
+
+    def annotate(identifier: int, label_ids: list[int]) -> None:
+        response = client.put(f"/api/transactions/{identifier}/annotation", json={"label_ids": label_ids})
+        assert response.status_code == 200, response.text
+
+    meituan = transaction_id("wx-1")
+    didi = transaction_id("ali-1")
+    annotate(meituan, [child["id"], urgent["id"]])
+    annotate(didi, [traffic["id"], urgent["id"]])
+    return {
+        "focus": focus, "parent": parent, "child": child, "traffic": traffic,
+        "flags": flags, "urgent": urgent, "reviewed": reviewed,
+        "meituan": meituan, "didi": didi,
+    }
+
+
+def _ids(payload: dict) -> set[str]:
+    return {item["transactionId"] for item in payload["items"]}
+
+
+def test_label_filters_include_match_descendants_by_default(client: TestClient) -> None:
+    labels = _prepare_labeled_records(client)
+    inclusive = _search(client, label_filters=[
+        {"label_id": labels["parent"]["id"], "mode": "include"},
+    ])
+    assert _ids(inclusive) == {"wx-1"}
+
+    exact_only = _search(client, label_filters=[
+        {"label_id": labels["parent"]["id"], "mode": "include", "include_descendants": False},
+    ])
+    assert exact_only["total"] == 0
+
+
+def test_label_filters_include_and_exclude_are_complementary(client: TestClient) -> None:
+    labels = _prepare_labeled_records(client)
+    baseline = _search(client)
+    included = _search(client, label_filters=[
+        {"label_id": labels["child"]["id"], "mode": "include"},
+    ])
+    excluded = _search(client, label_filters=[
+        {"label_id": labels["child"]["id"], "mode": "exclude"},
+    ])
+    assert _ids(included) == {"wx-1"}
+    assert _ids(excluded) == {"wx-2", "ali-1"}
+    assert included["total"] + excluded["total"] == baseline["total"]
+
+
+def test_label_filters_or_within_a_dimension_and_and_across_dimensions(client: TestClient) -> None:
+    labels = _prepare_labeled_records(client)
+    same_dimension = _search(client, label_filters=[
+        {"label_id": labels["child"]["id"], "mode": "include"},
+        {"label_id": labels["traffic"]["id"], "mode": "include"},
+    ])
+    assert _ids(same_dimension) == {"wx-1", "ali-1"}
+
+    cross_dimension = _search(client, label_filters=[
+        {"label_id": labels["child"]["id"], "mode": "include"},
+        {"label_id": labels["urgent"]["id"], "mode": "include"},
+    ])
+    assert _ids(cross_dimension) == {"wx-1"}
+
+    impossible = _search(client, label_filters=[
+        {"label_id": labels["child"]["id"], "mode": "include"},
+        {"label_id": labels["reviewed"]["id"], "mode": "include"},
+    ])
+    assert impossible["total"] == 0
+
+
+def test_label_filters_exclusion_wins_over_inclusion(client: TestClient) -> None:
+    labels = _prepare_labeled_records(client)
+    payload = _search(client, label_filters=[
+        {"label_id": labels["urgent"]["id"], "mode": "include"},
+        {"label_id": labels["child"]["id"], "mode": "exclude"},
+    ])
+    assert _ids(payload) == {"ali-1"}
+
+
+def test_label_filters_target_unlabeled_transactions(client: TestClient) -> None:
+    labels = _prepare_labeled_records(client)
+    included = _search(client, label_filters=[
+        {"dimension_id": labels["focus"]["id"], "mode": "include"},
+    ])
+    assert _ids(included) == {"wx-2"}
+
+    excluded = _search(client, label_filters=[
+        {"dimension_id": labels["focus"]["id"], "mode": "exclude"},
+    ])
+    assert _ids(excluded) == {"wx-1", "ali-1"}
+
+
+def test_label_filters_combine_with_amount_and_field_conditions(client: TestClient) -> None:
+    labels = _prepare_labeled_records(client)
+    payload = _search(client, filters=[
+        {"field": "amount", "mode": "exclude", "operator": "range", "min": "0", "max": "5"},
+    ], label_filters=[
+        {"label_id": labels["urgent"]["id"], "mode": "include"},
+    ])
+    assert _ids(payload) == {"ali-1"}
+
+
+@pytest.mark.parametrize("label_filters", [
+    [{"label_id": 999999, "mode": "include"}],
+    [{"dimension_id": "missing-dimension", "mode": "include"}],
+    [{"mode": "include"}],
+])
+def test_label_filters_reject_unknown_targets(client: TestClient, label_filters: list[dict]) -> None:
+    _import_wechat(client)
+    response = client.post("/api/transactions/search", json={"label_filters": label_filters})
+    assert response.status_code == 422, response.text
+
+
+def test_label_filters_reject_label_from_another_dimension(client: TestClient) -> None:
+    labels = _prepare_labeled_records(client)
+    response = client.post("/api/transactions/search", json={"label_filters": [
+        {"label_id": labels["child"]["id"], "dimension_id": labels["flags"]["id"], "mode": "include"},
+    ]})
+    assert response.status_code == 422, response.text

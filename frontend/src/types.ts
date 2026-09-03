@@ -16,14 +16,34 @@ export interface Transaction {
   sourceCategory?: string; paymentMethod?: string; status: string; statusCategory?: string
   transactionStatus?: string; merchantOrderId?: string; counterpartyAccount?: string; cleanedPaymentChannel?: string
 }
-export interface DashboardData { summary: Summary; trend: TrendPoint[]; categories: DistributionItem[]; channels: DistributionItem[]; distributions?: DashboardDistribution[]; recent: Transaction[] }
+export interface DashboardBaseline {
+  granularity: DashboardGranularity
+  unitLabel: string
+  unitCount: number
+  totalUnits: number
+  partial: boolean
+  income: number
+  expense: number
+  net: number
+  startDate: string | null
+  endDate: string | null
+}
+export interface DashboardData { summary: Summary; trend: TrendPoint[]; categories: DistributionItem[]; channels: DistributionItem[]; distributions?: DashboardDistribution[]; recent: Transaction[]; baseline?: DashboardBaseline }
 export interface TransactionPage { items: Transaction[]; total: number; page: number; pageSize: number }
 export type NormalizedField = 'source_platform' | 'transaction_time' | 'direction' | 'amount' | 'counterparty' | 'item_description' | 'payment_method' | 'payment_channel' | 'transaction_status' | 'status_category' | 'transaction_id' | 'merchant_order_id' | 'transaction_type' | 'source_category' | 'counterparty_account' | 'note'
 export type FilterMode = 'include' | 'exclude'
 export type FilterOperator = 'equals' | 'contains' | 'range' | 'is_empty'
 export interface TransactionFilter { field: NormalizedField; mode: FilterMode; operator: FilterOperator; value?: string; min?: string; max?: string }
+/** 按有效标签筛选；label_id 为空时表示该维度尚未打标签的流水。 */
+export interface TransactionLabelFilter {
+  label_id?: number
+  dimension_id?: string
+  mode: FilterMode
+  include_descendants: boolean
+}
 export interface TransactionSearchRequest {
   month?: string; query?: { text: string; mode: FilterMode }; filters: TransactionFilter[]
+  label_filters?: TransactionLabelFilter[]
   category?: string; channel?: string; annotation_status?: 'pending' | 'completed'; page: number; page_size: number
 }
 export interface HeatmapPoint { date: string; value: number; count: number }

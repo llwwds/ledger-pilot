@@ -1,4 +1,4 @@
-import type { FilterOperator, NormalizedField, TransactionFilter } from './types'
+import type { FilterOperator, NormalizedField, TransactionFilter, TransactionLabelFilter } from './types'
 
 export interface FilterFieldDefinition {
   key: NormalizedField
@@ -43,4 +43,20 @@ export function filterDescription(filter: TransactionFilter) {
   if (filter.operator === 'range') return `${mode} ${field.label}：${filter.min || '不限'} ～ ${filter.max || '不限'}`
   if (filter.operator === 'is_empty') return `${mode} ${field.label}：空值`
   return `${mode} ${field.label} ${filter.operator === 'contains' ? '模糊匹配' : '精确匹配'}“${filter.value ?? ''}”`
+}
+
+export function emptyLabelFilter(dimensionId: string, labelId?: number): TransactionLabelFilter {
+  return { dimension_id: dimensionId, mode: 'include', include_descendants: true, ...(labelId === undefined ? {} : { label_id: labelId }) }
+}
+
+export function labelFilterDescription(
+  filter: TransactionLabelFilter,
+  labelName: (id: number) => string,
+  dimensionName: (id: string) => string,
+) {
+  const mode = filter.mode === 'include' ? '包含' : '排除'
+  const target = filter.label_id != undefined
+    ? labelName(filter.label_id)
+    : `${dimensionName(filter.dimension_id ?? '')}（未打标签）`
+  return `${mode}标签「${target}」`
 }

@@ -233,7 +233,7 @@ describe('App', () => {
     await waitFor(() => expect(searchBodies.some((body) => Array.isArray(body.filters) && body.filters.length === 3)).toBe(true))
     const body = [...searchBodies].reverse().find((item) => Array.isArray(item.filters) && item.filters.length === 3)
     expect(body).toMatchObject({
-      month: '2026-08',
+      month: currentMonth(),
       query: { text: '咖啡', mode: 'exclude' }, annotation_status: 'pending', page: 1, page_size: 500,
       filters: [
         { field: 'counterparty', mode: 'include', operator: 'contains', value: '星巴克' },
@@ -260,12 +260,12 @@ describe('App', () => {
     render(<App />)
     fireEvent.click(screen.getByRole('button', { name: '流水标注' }))
     await waitFor(() => expect(searchBodies.length).toBe(1))
-    expect(searchBodies[0]).toMatchObject({ month: '2026-08', filters: [] })
+    expect(searchBodies[0]).toMatchObject({ month: currentMonth(), filters: [] })
 
     fireEvent.click(screen.getByRole('button', { name: '年度' }))
     await waitFor(() => expect(searchBodies.length).toBe(2))
     expect(searchBodies[1]).not.toHaveProperty('month')
-    expect(searchBodies[1]).toMatchObject({ filters: [{ field: 'transaction_time', mode: 'include', operator: 'range', min: '2026-01-01', max: '2026-12-31' }] })
+    expect(searchBodies[1]).toMatchObject({ filters: [{ field: 'transaction_time', mode: 'include', operator: 'range', ...currentYearRange() }] })
 
     fireEvent.click(screen.getByRole('button', { name: '自定义' }))
     expect(await screen.findByText('选择要复盘的时间边界')).toBeInTheDocument()
@@ -276,7 +276,7 @@ describe('App', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '月度' }))
     await waitFor(() => expect(searchBodies.length).toBe(4))
-    expect(searchBodies[3]).toMatchObject({ month: '2026-08', filters: [] })
+    expect(searchBodies[3]).toMatchObject({ month: currentMonth(), filters: [] })
   })
 
   it('筛选变化立即清空选择并拒绝 debounce 窗口内的旧响应', async () => {
@@ -433,7 +433,177 @@ describe('App', () => {
     expect(ruleBodies[0]).toMatchObject({ amount_min: '5', amount_max: '15', amount_scope: 'outside' })
     expect(screen.getByText('金额不在 5–15 元内')).toBeInTheDocument()
   })
+
+  it('趋势图按颗粒度展示收支基线，并可切换基线指标', async () => {
+    stubDashboard({
+      baseline: {
+        granularity: 'day', unitLabel: '日', unitCount: 28, totalUnits: 31, partial: true,
+        income: 192.11, expense: 304.26, net: -112.15, startDate: '2026-08-01', endDate: '2026-08-31',
+      },
+    })
+    render(<App />)
+
+    expect(await screen.findByText('¥192.11')).toBeInTheDocument()
+    expect(screen.getByText(/日均收入/)).toBeInTheDocument()
+    expect(screen.getByText(/已开始的 28 日（共 31 日，区间未走完）/)).toBeInTheDocument()
+
+    const group = screen.getByRole('group', { name: '选择基线指标' })
+    fireEvent.click(within(group).getByRole('button', { name: '支出' }))
+    expect(screen.getByText('¥304.26')).toBeInTheDocument()
+    expect(screen.getByText(/日均支出/)).toBeInTheDocument()
+    fireEvent.click(within(group).getByRole('button', { name: '净额' }))
+    expect(screen.getByText('-¥112.15')).toBeInTheDocument()
+    expect(screen.getByText(/日均净额/)).toBeInTheDocument()
+  })
+
+  it('看板底部按时间范围拉取明细，年度与自定义折算成交易时间条件', async () => {
+    const searches: Array<Record<string, unknown>> = []
+    stubDashboard({}, searches)
+    render(<App />)
+    await screen.findByText('范围流水明细')
+
+    await waitFor(() => expect(searches.at(-1)).toMatchObject({ month: currentMonth(), page: 1, page_size: 50, label_filters: [] }))
+
+    fireEvent.click(screen.getByRole('button', { name: '年度' }))
+    await waitFor(() => expect(searches.at(-1)).toMatchObject({
+      filters: [{ field: 'transaction_time', mode: 'include', operator: 'range', ...currentYearRange() }],
+    }))
+    expect(searches.at(-1)).not.toHaveProperty('month')
+  })
+
+  it('明细的搜索与金额条件都能在 chip 上单独切换包含或排除', async () => {
+    const searches: Array<Record<string, unknown>> = []
+    stubDashboard({}, searches)
+    render(<App />)
+    await screen.findByText('范围流水明细')
+
+    fireEvent.change(screen.getByLabelText('搜索范围内的流水'), { target: { value: '美团' } })
+    await waitFor(() => expect(searches.at(-1)).toMatchObject({ query: { text: '美团', mode: 'include' } }))
+    fireEvent.click(screen.getByRole('button', { name: '切换为排除：搜索“美团”' }))
+    await waitFor(() => expect(searches.at(-1)).toMatchObject({ query: { text: '美团', mode: 'exclude' } }))
+
+    fireEvent.change(screen.getByLabelText('金额下限'), { target: { value: '20' } })
+    fireEvent.change(screen.getByLabelText('金额上限'), { target: { value: '80' } })
+    await waitFor(() => expect(searches.at(-1)?.filters).toEqual([
+      { field: 'amount', mode: 'include', operator: 'range', min: '20', max: '80' },
+    ]))
+    fireEvent.click(screen.getByRole('button', { name: '切换为排除：金额 20 ～ 80' }))
+    await waitFor(() => expect(searches.at(-1)?.filters).toEqual([
+      { field: 'amount', mode: 'exclude', operator: 'range', min: '20', max: '80' },
+    ]))
+  })
+
+  it('标签筛选支持未启用、包含、排除三态循环，并可与搜索正交叠加', async () => {
+    const searches: Array<Record<string, unknown>> = []
+    stubDashboard({}, searches)
+    render(<App />)
+    await screen.findByText('范围流水明细')
+
+    fireEvent.click(screen.getByRole('button', { name: '标签筛选' }))
+    const dialog = screen.getByRole('dialog', { name: '标签筛选' })
+    const dining = within(dialog).getByRole('button', { name: '餐饮，当前未启用' })
+    fireEvent.click(dining)
+    expect(within(dialog).getByRole('button', { name: '餐饮，当前包含' })).toBeInTheDocument()
+    fireEvent.click(within(dialog).getByRole('button', { name: '餐饮，当前包含' }))
+    expect(within(dialog).getByRole('button', { name: '餐饮，当前排除' })).toBeInTheDocument()
+    fireEvent.click(within(dialog).getByRole('button', { name: '餐饮，当前排除' }))
+    expect(within(dialog).getByRole('button', { name: '餐饮，当前未启用' })).toBeInTheDocument()
+
+    fireEvent.click(within(dialog).getByRole('button', { name: '餐饮，当前未启用' }))
+    fireEvent.click(within(dialog).getByRole('button', { name: '已复核，当前未启用' }))
+    fireEvent.click(within(dialog).getByRole('button', { name: '应用 2 条条件' }))
+
+    await waitFor(() => expect(searches.at(-1)?.label_filters).toEqual([
+      { dimension_id: 'expense', label_id: 1, mode: 'include', include_descendants: true },
+      { dimension_id: 'flags', label_id: 2, mode: 'include', include_descendants: true },
+    ]))
+
+    fireEvent.click(screen.getByRole('button', { name: '切换为排除：包含标签「已复核」' }))
+    await waitFor(() => expect(searches.at(-1)?.label_filters).toEqual([
+      { dimension_id: 'expense', label_id: 1, mode: 'include', include_descendants: true },
+      { dimension_id: 'flags', label_id: 2, mode: 'exclude', include_descendants: true },
+    ]))
+    fireEvent.click(screen.getByRole('button', { name: '移除 排除标签「已复核」' }))
+    await waitFor(() => expect(searches.at(-1)?.label_filters).toEqual([
+      { dimension_id: 'expense', label_id: 1, mode: 'include', include_descendants: true },
+    ]))
+  })
+
+  it('支持筛选该维度未打标签的流水，并与其他条件同时生效', async () => {
+    const searches: Array<Record<string, unknown>> = []
+    stubDashboard({}, searches)
+    render(<App />)
+    await screen.findByText('范围流水明细')
+
+    fireEvent.click(screen.getByRole('button', { name: '标签筛选' }))
+    const dialog = screen.getByRole('dialog', { name: '标签筛选' })
+    fireEvent.click(within(dialog).getByRole('button', { name: '支出分类未打标签，当前未启用' }))
+    fireEvent.click(within(dialog).getByRole('button', { name: '应用 1 条条件' }))
+
+    await waitFor(() => expect(searches.at(-1)?.label_filters).toEqual([
+      { dimension_id: 'expense', mode: 'include', include_descendants: true },
+    ]))
+    expect(screen.getByText('包含标签「支出分类（未打标签）」')).toBeInTheDocument()
+  })
+
+  it('明细分页在筛选条件变化后回到第一页', async () => {
+    const searches: Array<Record<string, unknown>> = []
+    const total = 260
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((input: string, init?: RequestInit) => {
+      const url = String(input)
+      if (url.includes('/api/label-catalog')) return response([labelDimension(), flagDimension()])
+      if (url.endsWith('/api/rules')) return response([])
+      if (url.includes('/api/heatmaps')) return response({ year: 2026, expense: [], income: [] })
+      if (url.includes('/api/transactions/search')) {
+        searches.push(JSON.parse(String(init?.body)))
+        return response({ items: [transaction(1, '美团', '午餐')], total, page: 1, pageSize: 50 })
+      }
+      return response(dashboardPayload())
+    }))
+
+    render(<App />)
+    await screen.findByText('范围流水明细')
+    expect(await screen.findByText('第 1 / 6 页 · 每页 50 笔')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '下一页' }))
+    await waitFor(() => expect(searches.at(-1)).toMatchObject({ page: 2 }))
+    expect(screen.getByText('第 2 / 6 页 · 每页 50 笔')).toBeInTheDocument()
+
+    fireEvent.change(screen.getByLabelText('搜索范围内的流水'), { target: { value: '瑞幸' } })
+    await waitFor(() => expect(searches.at(-1)).toMatchObject({ page: 1, query: { text: '瑞幸', mode: 'include' } }))
+  })
 })
+
+function currentMonth() {
+  const now = new Date()
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+}
+
+function currentYearRange() {
+  const year = new Date().getFullYear()
+  return { min: `${year}-01-01`, max: `${year}-12-31` }
+}
+
+function dashboardPayload(overrides: Record<string, unknown> = {}) {
+  return {
+    summary: { income: 12000, expense: 3600, net: 8400 }, trend: [], categories: [], channels: [],
+    distributions: [], recent: [], ...overrides,
+  }
+}
+
+function stubDashboard(overrides: Record<string, unknown> = {}, searches: Array<Record<string, unknown>> = []) {
+  vi.stubGlobal('fetch', vi.fn().mockImplementation((input: string, init?: RequestInit) => {
+    const url = String(input)
+    if (url.includes('/api/label-catalog')) return response([labelDimension(), flagDimension()])
+    if (url.endsWith('/api/rules')) return response([])
+    if (url.includes('/api/heatmaps')) return response({ year: 2026, expense: [], income: [] })
+    if (url.includes('/api/transactions/search')) {
+      searches.push(JSON.parse(String(init?.body)))
+      return response({ items: [transaction(1, '美团', '午餐')], total: 1, page: 1, pageSize: 50 })
+    }
+    return response(dashboardPayload(overrides))
+  }))
+}
 
 function response(payload: unknown) {
   return Promise.resolve({ ok: true, json: async () => payload })
@@ -453,6 +623,15 @@ function labelDimension() {
     id: 'expense', key: 'expense_category', name: '支出分类', notes: '支出去向', selectionMode: 'single' as const,
     sortOrder: 0, enabled: true, labels: [
       { id: 1, dimensionId: 'expense', parentId: null, name: '餐饮', notes: '', sortOrder: 0, enabled: true, usageCount: 0 },
+    ],
+  }
+}
+
+function flagDimension() {
+  return {
+    id: 'flags', key: 'flags', name: '标记', notes: '复核状态', selectionMode: 'multiple' as const,
+    sortOrder: 1, enabled: true, labels: [
+      { id: 2, dimensionId: 'flags', parentId: null, name: '已复核', notes: '', sortOrder: 0, enabled: true, usageCount: 0 },
     ],
   }
 }
